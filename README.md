@@ -11,7 +11,7 @@ a message in a configured chat.
    ```sh
    go mod download
    ```
-2. Set environment variable `TELEGRAM_TOKEN` with your bot token.
+2. Set environment variable `TELEGRAM_BOT_TOKEN` with your bot token.
    The target chat will be determined automatically from the first command or can be set using `/set_chat`.
 3. Run the bot
    ```sh
@@ -37,4 +37,4 @@ Build the image and run the bot using docker-compose:
 docker-compose up --build
 ```
 
-Environment variable `TELEGRAM_TOKEN` can be placed in a `.env` file or exported before running compose.
+Environment variable `TELEGRAM_BOT_TOKEN` can be placed in a `.env` file or exported before running compose.
