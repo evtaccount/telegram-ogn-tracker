@@ -1,6 +1,10 @@
 version: '3.8'
 services:
-  tracker:
+  tax-bot:
     build: .
+    container_name: ogn-tracker
     environment:
-      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+    volumes:
+      - ./logs:/root/logs
+    restart: always
