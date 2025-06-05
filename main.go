@@ -253,16 +253,7 @@ func main() {
 	if token == "" {
 		log.Fatal("TELEGRAM_TOKEN must be set")
 	}
-	chatIDStr := os.Getenv("TARGET_CHAT_ID")
-	var chatID int64
-	if chatIDStr != "" {
-		var err error
-		chatID, err = strconv.ParseInt(chatIDStr, 10, 64)
-		if err != nil {
-			log.Fatalf("invalid TARGET_CHAT_ID: %v", err)
-		}
-	}
-	bot, err := NewTrackerBot(token, chatID)
+	bot, err := NewTrackerBot(token, 0)
 	if err != nil {
 		log.Fatal(err)
 	}
