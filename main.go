@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -60,6 +61,8 @@ func (tb *TrackerBot) handleUpdate(update tgbotapi.Update) {
 	if update.Message == nil || !update.Message.IsCommand() {
 		return
 	}
+	// Automatically set target chat if it wasn't configured
+	tb.ensureTargetChat(update.Message.Chat.ID)
 	switch update.Message.Command() {
 	case "add":
 		tb.cmdAdd(update)
@@ -71,6 +74,10 @@ func (tb *TrackerBot) handleUpdate(update tgbotapi.Update) {
 		tb.cmdTrackOff(update)
 	case "list":
 		tb.cmdList(update)
+	case "chat_id":
+		tb.cmdChatID(update)
+	case "set_chat":
+		tb.cmdSetChat(update)
 	}
 }
 
@@ -148,6 +155,32 @@ func (tb *TrackerBot) cmdList(update tgbotapi.Update) {
 	tb.reply(update.Message.Chat.ID, "Tracking: "+status+"\nIDs: "+ids)
 }
 
+func (tb *TrackerBot) cmdChatID(update tgbotapi.Update) {
+	tb.mu.Lock()
+	current := tb.targetChatID
+	tb.mu.Unlock()
+	reply := fmt.Sprintf("Chat ID: %d", update.Message.Chat.ID)
+	if current == update.Message.Chat.ID {
+		reply += " (target chat)"
+	}
+	tb.reply(update.Message.Chat.ID, reply)
+}
+
+func (tb *TrackerBot) cmdSetChat(update tgbotapi.Update) {
+	tb.mu.Lock()
+	tb.targetChatID = update.Message.Chat.ID
+	tb.mu.Unlock()
+	tb.reply(update.Message.Chat.ID, fmt.Sprintf("Target chat set to %d", tb.targetChatID))
+}
+
+func (tb *TrackerBot) ensureTargetChat(chatID int64) {
+	tb.mu.Lock()
+	if tb.targetChatID == 0 {
+		tb.targetChatID = chatID
+	}
+	tb.mu.Unlock()
+}
+
 func (tb *TrackerBot) reply(chatID int64, text string) {
 	msg := tgbotapi.NewMessage(chatID, text)
 	tb.bot.Send(msg)
@@ -155,7 +188,7 @@ func (tb *TrackerBot) reply(chatID int64, text string) {
 
 func (tb *TrackerBot) updatePositions() {
 	tb.mu.Lock()
-	if !tb.trackingEnabled || len(tb.trackingIDs) == 0 {
+	if !tb.trackingEnabled || len(tb.trackingIDs) == 0 || tb.targetChatID == 0 {
 		tb.mu.Unlock()
 		return
 	}
@@ -217,13 +250,17 @@ func getOGNPosition(id string) (*Position, error) {
 
 func main() {
 	token := os.Getenv("TELEGRAM_TOKEN")
-	chatIDStr := os.Getenv("TARGET_CHAT_ID")
-	if token == "" || chatIDStr == "" {
-		log.Fatal("TELEGRAM_TOKEN and TARGET_CHAT_ID must be set")
+	if token == "" {
+		log.Fatal("TELEGRAM_TOKEN must be set")
 	}
-	chatID, err := strconv.ParseInt(chatIDStr, 10, 64)
-	if err != nil {
-		log.Fatalf("invalid TARGET_CHAT_ID: %v", err)
+	chatIDStr := os.Getenv("TARGET_CHAT_ID")
+	var chatID int64
+	if chatIDStr != "" {
+		var err error
+		chatID, err = strconv.ParseInt(chatIDStr, 10, 64)
+		if err != nil {
+			log.Fatalf("invalid TARGET_CHAT_ID: %v", err)
+		}
 	}
 	bot, err := NewTrackerBot(token, chatID)
 	if err != nil {
