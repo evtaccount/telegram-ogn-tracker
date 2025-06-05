@@ -249,9 +249,9 @@ func getOGNPosition(id string) (*Position, error) {
 }
 
 func main() {
-	token := os.Getenv("TELEGRAM_TOKEN")
-	if token == "" {
-		log.Fatal("TELEGRAM_TOKEN must be set")
+    token := os.Getenv("TELEGRAM_BOT_TOKEN")
+    if token == "" {
+            log.Fatal("TELEGRAM_BOT_TOKEN must be set")
 	}
 	bot, err := NewTrackerBot(token, 0)
 	if err != nil {
