@@ -7,10 +7,7 @@ from telegram.ext import (ApplicationBuilder, CommandHandler,
                           ContextTypes)
 
 # Library for accessing OGN data
-# OGNClient was moved to a submodule in newer versions of python-ogn-client.
-# Importing it from ``ogn.client`` raises ``ImportError``. Import directly from
-# the ``client`` module so the code works with recent library releases.
-from ogn.client.client import OGNClient
+from ogn.client import OGNClient
 
 
 class TrackerBot:
