@@ -13,7 +13,7 @@ a message in a configured chat.
    ```
 2. Set environment variables:
    - `TELEGRAM_TOKEN` – your Telegram bot token.
-   - `TARGET_CHAT_ID` – chat where updates should be posted.
+   - `TARGET_CHAT_ID` – chat where updates should be posted. This is optional; if not set, the first chat sending a command will be used.
 3. Run the bot
    ```sh
    go run ./...
@@ -25,6 +25,8 @@ Commands inside Telegram:
 - `/track_on` – enable tracking.
 - `/track_off` – disable tracking.
 - `/list` – show current state.
+- `/chat_id` – display the id of the current chat.
+- `/set_chat` – use the current chat for position updates.
 
 Positions are requested from `https://api.glidernet.org/tracker/<id>`; you may
 need to adjust this endpoint if the API changes.
