@@ -11,9 +11,8 @@ a message in a configured chat.
    ```sh
    go mod download
    ```
-2. Set environment variables:
-   - `TELEGRAM_TOKEN` – your Telegram bot token.
-   - `TARGET_CHAT_ID` – chat where updates should be posted. This is optional; if not set, the first chat sending a command will be used.
+2. Set environment variable `TELEGRAM_TOKEN` with your bot token.
+   The target chat will be determined automatically from the first command or can be set using `/set_chat`.
 3. Run the bot
    ```sh
    go run ./...
@@ -30,3 +29,12 @@ Commands inside Telegram:
 
 Positions are requested from `https://api.glidernet.org/tracker/<id>`; you may
 need to adjust this endpoint if the API changes.
+
+## Docker
+
+Build the image and run the bot using docker-compose:
+```sh
+docker-compose up --build
+```
+
+Environment variable `TELEGRAM_TOKEN` can be placed in a `.env` file or exported before running compose.
