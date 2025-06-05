@@ -1,10 +1,21 @@
-FROM python:3.12-slim
+FROM golang:1.24.2-alpine AS builder
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+RUN go mod download
 
-COPY tracker_bot.py .
+# Кросс-компиляция под Linux x86_64
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+RUN go build -o tracker
 
-CMD ["python", "tracker_bot.py"]
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+COPY --from=builder /app/tracker .
+
+RUN mkdir -p /root/logs
+
+CMD ["./tracker"]

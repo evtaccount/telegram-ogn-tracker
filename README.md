@@ -1,23 +1,21 @@
 # Telegram OGN Tracker
 
-Simple Telegram bot written in Python that tracks glider positions from the
-Open Glider Network (OGN). It supports adding/removing OGN identifiers and
-toggling tracking. When tracking is enabled the bot periodically fetches
-positions for every configured id using
-[`python-ogn-client`](https://github.com/glidernet/python-ogn-client) and sends
-(or updates) a message in a configured chat.
+Simple Telegram bot written in Go that tracks glider positions from Open Glider Network (OGN).
+It supports adding/removing OGN identifiers and toggling tracking. When tracking is enabled,
+the bot periodically fetches positions for every configured id and sends (or updates)
+a message in a configured chat.
 
 ## Usage
 
-1. Install Python dependencies
+1. Install Go and download dependencies
    ```sh
-   pip install -r requirements.txt
+   go mod download
    ```
 2. Set environment variable `TELEGRAM_BOT_TOKEN` with your bot token.
    The target chat will be determined automatically from the first command or can be set using `/set_chat`.
 3. Run the bot
    ```sh
-   python tracker_bot.py
+   go run ./...
    ```
 
 Commands inside Telegram:
@@ -29,8 +27,8 @@ Commands inside Telegram:
 - `/chat_id` – display the id of the current chat.
 - `/set_chat` – use the current chat for position updates.
 
-Positions are obtained from the OGN network via `python-ogn-client` which
-connects to an APRS server and streams live data.
+Positions are requested from `https://api.glidernet.org/tracker/<id>`; you may
+need to adjust this endpoint if the API changes.
 
 ## Docker
 
