@@ -1,6 +1,6 @@
 version: '3.8'
 services:
-  tax-bot:
+  ogn-tracker:
     build: .
     container_name: ogn-tracker
     environment:
