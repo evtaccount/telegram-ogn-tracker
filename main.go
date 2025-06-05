@@ -1,16 +1,15 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"strconv"
 	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"gitlab.eqipe.ch/sgw/go-ogn-client/ogn"
 )
 
 type Position struct {
@@ -25,6 +24,8 @@ type TrackerBot struct {
 	trackingIDs     map[string]int
 	trackingEnabled bool
 	mu              sync.Mutex
+	ognClient       *ogn.Client
+	positions       map[string]*Position
 }
 
 func NewTrackerBot(token string, chatID int64) (*TrackerBot, error) {
@@ -32,11 +33,21 @@ func NewTrackerBot(token string, chatID int64) (*TrackerBot, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &TrackerBot{
+	tb := &TrackerBot{
 		bot:          bot,
 		targetChatID: chatID,
 		trackingIDs:  make(map[string]int),
-	}, nil
+		positions:    make(map[string]*Position),
+	}
+	client := ogn.New("", true)
+	client.MessageHandler = tb.handleOGNMessage
+	tb.ognClient = client
+	go func() {
+		if err := client.Run(); err != nil {
+			log.Printf("ogn client error: %v", err)
+		}
+	}()
+	return tb, nil
 }
 
 func (tb *TrackerBot) Run() {
@@ -196,11 +207,16 @@ func (tb *TrackerBot) updatePositions() {
 	for id := range tb.trackingIDs {
 		ids = append(ids, id)
 	}
+	positions := make(map[string]*Position)
+	for _, id := range ids {
+		if p, ok := tb.positions[id]; ok {
+			positions[id] = p
+		}
+	}
 	tb.mu.Unlock()
 
-	for _, id := range ids {
-		pos, err := getOGNPosition(id)
-		if err != nil || pos == nil {
+	for id, pos := range positions {
+		if pos == nil {
 			continue
 		}
 		text := "ID: " + id + "\nLat: " + strconv.FormatFloat(pos.Lat, 'f', 6, 64) +
@@ -228,30 +244,30 @@ func (tb *TrackerBot) updatePositions() {
 	}
 }
 
-func getOGNPosition(id string) (*Position, error) {
-	client := http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get("https://api.glidernet.org/tracker/" + id)
-	if err != nil {
-		return nil, err
+func (tb *TrackerBot) handleOGNMessage(msg interface{}) {
+	m, ok := msg.(*ogn.APRSMessage)
+	if !ok || m == nil {
+		return
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, nil
+	pos, ok := m.Body.(*ogn.APRSPosition)
+	if !ok || pos == nil {
+		return
 	}
-	var p Position
-	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
-		return nil, err
+	tb.mu.Lock()
+	if _, tracked := tb.trackingIDs[m.CallSign]; tracked {
+		p := &Position{Lat: pos.Latitude, Lon: pos.Longitude}
+		if pos.Time != nil {
+			p.Timestamp = pos.Time.UTC().Unix()
+		}
+		tb.positions[m.CallSign] = p
 	}
-	if p.Lat == 0 && p.Lon == 0 {
-		return nil, nil
-	}
-	return &p, nil
+	tb.mu.Unlock()
 }
 
 func main() {
-    token := os.Getenv("TELEGRAM_BOT_TOKEN")
-    if token == "" {
-            log.Fatal("TELEGRAM_BOT_TOKEN must be set")
+	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	if token == "" {
+		log.Fatal("TELEGRAM_BOT_TOKEN must be set")
 	}
 	bot, err := NewTrackerBot(token, 0)
 	if err != nil {
