@@ -8,9 +8,12 @@ Simple Telegram bot written in Python that tracks glider positions from the Open
    ```sh
    make install
    ```
-2. Set `TELEGRAM_BOT_TOKEN` environment variable with your bot token. The target
-   chat will be determined automatically from the first command or can be set
-   using `/set_chat`.
+2. Create a `.env` file in this directory with your bot token:
+   ```
+   TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_TOKEN
+   ```
+   The target chat will be determined automatically from the first command or
+   can be set using `/set_chat`.
 3. Start the bot
    ```sh
    make run

@@ -3,6 +3,7 @@ import logging
 import threading
 from datetime import datetime
 from typing import Dict
+from dotenv import load_dotenv
 
 from ogn.client import AprsClient
 from ogn.parser import parse, AprsParseError
@@ -187,6 +188,7 @@ class TrackerBot:
 
 
 def main() -> None:
+    load_dotenv()
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN must be set")
