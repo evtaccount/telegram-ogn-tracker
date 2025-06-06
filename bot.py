@@ -86,8 +86,6 @@ class TrackerBot:
                         "timestamp": beacon.get("timestamp"),
                         "name": beacon.get("name"),
                     }
-                else:
-                    logging.debug("Beacon %s filtered out", beacon_id)
         except AprsParseError as exc:
             logging.warning("Failed to parse beacon: %s", exc)
         except Exception as exc:
