@@ -32,7 +32,11 @@ class TrackerBot:
 
         # OGN client
         self.client = AprsClient(aprs_user=aprs_user)
-        self.client.connect()
+        try:
+            self.client.connect()
+            logging.info("Connected to OGN")
+        except Exception as exc:
+            logging.error("Failed to connect to OGN: %s", exc)
         self.client_thread = threading.Thread(target=self.run_client, daemon=True)
         self.client_thread.start()
 
@@ -52,6 +56,7 @@ class TrackerBot:
             beacon = parse(raw_message)
             beacon_id = beacon.get("address", "").upper()
             if not beacon_id:
+                logging.warning("Beacon without address: %s", raw_message)
                 return
             with self.lock:
                 if beacon_id in self.tracking_ids:
@@ -60,8 +65,12 @@ class TrackerBot:
                         "lon": beacon.get("longitude"),
                         "timestamp": beacon.get("timestamp")
                     }
-        except AprsParseError:
-            pass
+                else:
+                    logging.debug("Beacon %s filtered out", beacon_id)
+        except AprsParseError as exc:
+            logging.warning("Failed to parse beacon: %s", exc)
+        except Exception as exc:
+            logging.error("Error processing beacon: %s", exc)
 
     def ensure_chat(self, chat_id: int) -> None:
         with self.lock:
@@ -152,12 +161,16 @@ class TrackerBot:
             if msg_id:
                 try:
                     context.bot.edit_message_text(chat_id=self.target_chat_id, message_id=msg_id, text=text)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logging.error("Failed to edit message for %s: %s", ogn_id, exc)
             else:
-                msg = context.bot.send_message(chat_id=self.target_chat_id, text=text)
-                with self.lock:
-                    self.tracking_ids[ogn_id] = msg.message_id
+                try:
+                    msg = context.bot.send_message(chat_id=self.target_chat_id, text=text)
+                except Exception as exc:
+                    logging.error("Failed to send message for %s: %s", ogn_id, exc)
+                else:
+                    with self.lock:
+                        self.tracking_ids[ogn_id] = msg.message_id
 
     def run(self) -> None:
         logging.info("Bot started")
