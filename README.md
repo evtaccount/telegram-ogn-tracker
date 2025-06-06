@@ -29,9 +29,10 @@ Commands inside Telegram:
 - `/chat_id` – display the id of the current chat.
 - `/set_chat` – use the current chat for position updates.
 
-When tracking IDs, the bot sends a live location message for each address. If a
-new beacon arrives for the same address, that message is updated with the new
-coordinates instead of sending a new message.
+When tracking IDs, the bot sends a live location message for each address. The
+address and associated user name are posted in a reply to that message. If a new
+beacon arrives for the same address, the live location message is updated with
+the new coordinates instead of sending a new message.
 
 Positions are requested from `https://api.glidernet.org/tracker/<id>`; you may
 need to adjust this endpoint if the API changes.
