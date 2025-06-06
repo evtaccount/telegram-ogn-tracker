@@ -32,6 +32,8 @@ class TrackerBot:
         self.app.add_handler(CommandHandler("track_on", self.cmd_track_on))
         self.app.add_handler(CommandHandler("track_off", self.cmd_track_off))
         self.app.add_handler(CommandHandler("list", self.cmd_list))
+        self.app.add_handler(CommandHandler("clear", self.cmd_clear))
+        self.app.add_handler(CommandHandler("clearid", self.cmd_clear_id))
         self.app.add_handler(CommandHandler("chat_id", self.cmd_chat_id))
         self.app.add_handler(CommandHandler("set_chat", self.cmd_set_chat))
 
@@ -152,6 +154,28 @@ class TrackerBot:
             ids = ", ".join(self.tracking_ids.keys()) or "No ids"
             status = "on" if self.tracking_enabled else "off"
         await update.message.reply_text(f"Tracking: {status}\nIDs: {ids}")
+
+    async def cmd_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Clear all tracked OGN ids."""
+        with self.lock:
+            self.tracking_ids.clear()
+            self.positions.clear()
+        await update.message.reply_text("All IDs cleared")
+
+    async def cmd_clear_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Remove the specified OGN id."""
+        if not context.args:
+            await update.message.reply_text("Usage: /clearid <ogn_id>")
+            return
+        ogn_id = context.args[0].upper()
+        with self.lock:
+            removed = ogn_id in self.tracking_ids
+            self.tracking_ids.pop(ogn_id, None)
+            self.positions.pop(ogn_id, None)
+        if removed:
+            await update.message.reply_text(f"Cleared {ogn_id}")
+        else:
+            await update.message.reply_text(f"{ogn_id} not found")
 
     async def cmd_chat_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         with self.lock:

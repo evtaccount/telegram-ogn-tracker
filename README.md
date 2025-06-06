@@ -23,6 +23,8 @@ Commands inside Telegram:
 - `/start` – display a welcome message and set target chat.
 - `/add <id>` – start tracking given OGN id.
 - `/remove <id>` – stop tracking id.
+- `/clear` – remove all tracked ids.
+- `/clearid <id>` – remove the specified id.
 - `/track_on` – enable tracking.
 - `/track_off` – disable tracking.
 - `/list` – show current state.
