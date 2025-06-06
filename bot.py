@@ -83,7 +83,8 @@ class TrackerBot:
                     self.positions[beacon_id] = {
                         "lat": beacon.get("latitude"),
                         "lon": beacon.get("longitude"),
-                        "timestamp": beacon.get("timestamp")
+                        "timestamp": beacon.get("timestamp"),
+                        "name": beacon.get("name"),
                     }
                 else:
                     logging.debug("Beacon %s filtered out", beacon_id)
@@ -198,6 +199,14 @@ class TrackerBot:
                         latitude=pos.get("lat"),
                         longitude=pos.get("lon"),
                         live_period=86400,
+                    )
+                    text = f"Address: {ogn_id}"
+                    if pos.get("name"):
+                        text += f"\nUser: {pos['name']}"
+                    await context.bot.send_message(
+                        chat_id=self.target_chat_id,
+                        text=text,
+                        reply_to_message_id=msg.message_id,
                     )
                 except Exception as exc:
                     logging.error("Failed to send location for %s: %s", ogn_id, exc)
