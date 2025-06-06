@@ -179,24 +179,28 @@ class TrackerBot:
             time_str = ""
             if isinstance(pos.get("timestamp"), datetime):
                 time_str = pos["timestamp"].strftime("%Y-%m-%dT%H:%M:%SZ")
-            text = (
-                f"ID: {ogn_id}\n"
-                f"Lat: {pos.get('lat')}\n"
-                f"Lon: {pos.get('lon')}\n"
-                f"Time: {time_str}"
-            )
             with self.lock:
                 msg_id = self.tracking_ids.get(ogn_id, 0)
             if msg_id:
                 try:
-                    await context.bot.edit_message_text(chat_id=self.target_chat_id, message_id=msg_id, text=text)
+                    await context.bot.edit_message_live_location(
+                        chat_id=self.target_chat_id,
+                        message_id=msg_id,
+                        latitude=pos.get("lat"),
+                        longitude=pos.get("lon"),
+                    )
                 except Exception as exc:
-                    logging.error("Failed to edit message for %s: %s", ogn_id, exc)
+                    logging.error("Failed to edit location for %s: %s", ogn_id, exc)
             else:
                 try:
-                    msg = await context.bot.send_message(chat_id=self.target_chat_id, text=text)
+                    msg = await context.bot.send_location(
+                        chat_id=self.target_chat_id,
+                        latitude=pos.get("lat"),
+                        longitude=pos.get("lon"),
+                        live_period=86400,
+                    )
                 except Exception as exc:
-                    logging.error("Failed to send message for %s: %s", ogn_id, exc)
+                    logging.error("Failed to send location for %s: %s", ogn_id, exc)
                 else:
                     with self.lock:
                         self.tracking_ids[ogn_id] = msg.message_id
