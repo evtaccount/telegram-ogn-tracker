@@ -30,6 +30,7 @@ Commands inside Telegram:
 - `/list` – show current state.
 - `/chat_id` – display the id of the current chat.
 - `/set_chat` – use the current chat for position updates.
+- `/new_session` – start a new tracking session.
 
 When tracking IDs, the bot sends a live location message for each address. The
 address and associated user name are posted in a reply to that message. If a new
