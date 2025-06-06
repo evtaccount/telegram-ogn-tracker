@@ -2,7 +2,11 @@ import os
 import logging
 import threading
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Set
+
+OWNER_ID = 182255461
+TARGET_CHAT_ID = 0  # replace with your chat id
+TRUSTED_USERS_FILE = "trusted_users.txt"
 from dotenv import load_dotenv
 
 from ogn.client import AprsClient
@@ -23,9 +27,11 @@ class TrackerBot:
         self.tracking_ids: Dict[str, int] = {}
         self.positions: Dict[str, Dict[str, float]] = {}
         self.tracking_enabled = False
-        self.target_chat_id: int | None = None
+        self.target_chat_id: int = TARGET_CHAT_ID
         self.lock = threading.Lock()
         self.session_started = False
+        self.trusted_users: Set[int] = set()
+        self.load_trusted_users()
 
         # Telegram command handlers
         self.app.add_handler(CommandHandler("start", self.cmd_start))
@@ -36,9 +42,9 @@ class TrackerBot:
         self.app.add_handler(CommandHandler("list", self.cmd_list))
         self.app.add_handler(CommandHandler("clear", self.cmd_clear))
         self.app.add_handler(CommandHandler("clearid", self.cmd_clear_id))
-        self.app.add_handler(CommandHandler("chat_id", self.cmd_chat_id))
-        self.app.add_handler(CommandHandler("set_chat", self.cmd_set_chat))
         self.app.add_handler(CommandHandler("new_session", self.cmd_new_session))
+        self.app.add_handler(CommandHandler("add_trusted", self.cmd_add_trusted))
+        self.app.add_handler(CommandHandler("list_trusted", self.cmd_list_trusted))
         self.app.add_handler(CallbackQueryHandler(self.handle_query))
 
         # OGN client (started on /track_on)
@@ -77,6 +83,32 @@ class TrackerBot:
             self.client_thread.join(timeout=2)
         self.client_thread = None
 
+    def load_trusted_users(self) -> None:
+        """Load trusted user ids from file."""
+        if os.path.exists(TRUSTED_USERS_FILE):
+            with open(TRUSTED_USERS_FILE, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        try:
+                            self.trusted_users.add(int(line))
+                        except ValueError:
+                            logging.warning("Invalid user id in trusted file: %s", line)
+        else:
+            self.trusted_users.add(OWNER_ID)
+            self.save_trusted_users()
+
+    def save_trusted_users(self) -> None:
+        with open(TRUSTED_USERS_FILE, "w", encoding="utf-8") as fh:
+            for uid in sorted(self.trusted_users):
+                fh.write(f"{uid}\n")
+
+    def is_trusted(self, update: Update) -> bool:
+        user = update.effective_user
+        if not user or user.id not in self.trusted_users:
+            return False
+        return True
+
     def process_beacon(self, raw_message: str) -> None:
         try:
             beacon = parse(raw_message)
@@ -97,20 +129,18 @@ class TrackerBot:
         except Exception as exc:
             logging.error("Error processing beacon: %s", exc)
 
-    def ensure_chat(self, chat_id: int) -> None:
-        with self.lock:
-            if self.target_chat_id is None:
-                self.target_chat_id = chat_id
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start by setting the chat and showing basic help."""
-        self.ensure_chat(update.effective_chat.id)
+        if not self.is_trusted(update):
+            return
         await update.message.reply_text(
             "OGN tracker bot ready. Use /add <id> to track gliders."
         )
 
     async def cmd_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        self.ensure_chat(update.effective_chat.id)
+        if not self.is_trusted(update):
+            return
         if not context.args:
             await update.message.reply_text("Usage: /add <ogn_id>")
             return
@@ -123,6 +153,8 @@ class TrackerBot:
         await update.message.reply_text(f"Added {ogn_id}")
 
     async def cmd_remove(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self.is_trusted(update):
+            return
         if not context.args:
             await update.message.reply_text("Usage: /remove <ogn_id>")
             return
@@ -136,6 +168,8 @@ class TrackerBot:
                 await update.message.reply_text(f"{ogn_id} not found")
 
     async def cmd_track_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self.is_trusted(update):
+            return
         with self.lock:
             if self.tracking_enabled:
                 await update.message.reply_text("Tracking already enabled")
@@ -145,6 +179,8 @@ class TrackerBot:
         await update.message.reply_text("Tracking enabled")
 
     async def cmd_track_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self.is_trusted(update):
+            return
         with self.lock:
             if not self.tracking_enabled:
                 await update.message.reply_text("Tracking already disabled")
@@ -154,6 +190,8 @@ class TrackerBot:
         await update.message.reply_text("Tracking disabled")
 
     async def cmd_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self.is_trusted(update):
+            return
         with self.lock:
             ids = ", ".join(self.tracking_ids.keys()) or "No ids"
             status = "on" if self.tracking_enabled else "off"
@@ -161,6 +199,8 @@ class TrackerBot:
 
     async def cmd_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Clear all tracked OGN ids."""
+        if not self.is_trusted(update):
+            return
         with self.lock:
             self.tracking_ids.clear()
             self.positions.clear()
@@ -168,6 +208,8 @@ class TrackerBot:
 
     async def cmd_clear_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Remove the specified OGN id."""
+        if not self.is_trusted(update):
+            return
         if not context.args:
             await update.message.reply_text("Usage: /clearid <ogn_id>")
             return
@@ -181,21 +223,9 @@ class TrackerBot:
         else:
             await update.message.reply_text(f"{ogn_id} not found")
 
-    async def cmd_chat_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        with self.lock:
-            current = self.target_chat_id
-        reply = f"Chat ID: {update.effective_chat.id}"
-        if current == update.effective_chat.id:
-            reply += " (target chat)"
-        await update.message.reply_text(reply)
-
-    async def cmd_set_chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        with self.lock:
-            self.target_chat_id = update.effective_chat.id
-        await update.message.reply_text(f"Target chat set to {self.target_chat_id}")
-
     async def cmd_new_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        self.ensure_chat(update.effective_chat.id)
+        if not self.is_trusted(update):
+            return
         with self.lock:
             if self.session_started:
                 buttons = [
@@ -216,6 +246,8 @@ class TrackerBot:
     async def handle_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
         if not query:
+            return
+        if not self.is_trusted(update):
             return
         await query.answer()
         data = query.data
@@ -247,6 +279,29 @@ class TrackerBot:
             await query.message.reply_text("Новая сессия начата")
             if data == "reset_old":
                 await query.message.reply_text("Добавьте адреса командой /add <id>")
+
+    async def cmd_add_trusted(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if update.effective_user.id != OWNER_ID:
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /add_trusted <user_id>")
+            return
+        try:
+            user_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Invalid user id")
+            return
+        with self.lock:
+            self.trusted_users.add(user_id)
+            self.save_trusted_users()
+        await update.message.reply_text(f"User {user_id} added to trusted list")
+
+    async def cmd_list_trusted(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if update.effective_user.id != OWNER_ID:
+            return
+        with self.lock:
+            ids = ", ".join(str(u) for u in sorted(self.trusted_users)) or "none"
+        await update.message.reply_text(f"Trusted users: {ids}")
 
     async def send_updates(self, context: ContextTypes.DEFAULT_TYPE) -> None:
         with self.lock:
