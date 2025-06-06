@@ -1,6 +1,6 @@
 # Telegram OGN Tracker
 
-Simple Telegram bot written in Python that tracks glider positions from the Open Glider Network (OGN). It supports adding and removing OGN identifiers, toggling tracking and setting the chat where updates are posted.
+Simple Telegram bot written in Python that tracks glider positions from the Open Glider Network (OGN). The chat for updates is configured in the code and cannot be changed at runtime. The bot processes commands only from trusted users.
 
 ## Usage
 
@@ -12,15 +12,14 @@ Simple Telegram bot written in Python that tracks glider positions from the Open
    ```
    TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_TOKEN
    ```
-   The target chat will be determined automatically from the first command or
-   can be set using `/set_chat`.
+   Set the `TARGET_CHAT_ID` constant in `bot.py` to the chat where updates should be sent.
 3. Start the bot
    ```sh
    make run
    ```
 
 Commands inside Telegram:
-- `/start` – display a welcome message and set target chat.
+- `/start` – display a welcome message.
 - `/add <id>` – start tracking given OGN id.
 - `/remove <id>` – stop tracking id.
 - `/clear` – remove all tracked ids.
@@ -28,9 +27,9 @@ Commands inside Telegram:
 - `/track_on` – enable tracking.
 - `/track_off` – disable tracking.
 - `/list` – show current state.
-- `/chat_id` – display the id of the current chat.
-- `/set_chat` – use the current chat for position updates.
 - `/new_session` – start a new tracking session.
+- `/add_trusted <user_id>` – add a user to the trusted list (owner only).
+- `/list_trusted` – list trusted users (owner only).
 
 When tracking IDs, the bot sends a live location message for each address. The
 address and associated user name are posted in a reply to that message. If a new
