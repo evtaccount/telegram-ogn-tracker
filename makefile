@@ -1,4 +1,4 @@
-.PHONY: install lint run
+.PHONY: install lint run stop
 
 install:
 	pip install -r requirements.txt
@@ -8,3 +8,7 @@ lint:
 
 run:
 	python bot.py
+
+stop:
+	docker stop ogn-tracker || true
+	docker rm ogn-tracker || true
