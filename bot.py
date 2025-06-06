@@ -35,15 +35,9 @@ class TrackerBot:
         self.app.add_handler(CommandHandler("chat_id", self.cmd_chat_id))
         self.app.add_handler(CommandHandler("set_chat", self.cmd_set_chat))
 
-        # OGN client
+        # OGN client (started on /track_on)
         self.client = AprsClient(aprs_user=aprs_user)
-        try:
-            self.client.connect()
-            logging.info("Connected to OGN")
-        except Exception as exc:
-            logging.error("Failed to connect to OGN: %s", exc)
-        self.client_thread = threading.Thread(target=self.run_client, daemon=True)
-        self.client_thread.start()
+        self.client_thread: threading.Thread | None = None
 
         # Periodic updates every 30 seconds
         if self.app.job_queue:
@@ -58,6 +52,24 @@ class TrackerBot:
             logging.error("AprsClient error: %s", exc)
         finally:
             self.client.disconnect()
+
+    def start_client(self) -> None:
+        if self.client_thread and self.client_thread.is_alive():
+            return
+        try:
+            self.client.connect()
+            logging.info("Connected to OGN")
+        except Exception as exc:
+            logging.error("Failed to connect to OGN: %s", exc)
+            return
+        self.client_thread = threading.Thread(target=self.run_client, daemon=True)
+        self.client_thread.start()
+
+    def stop_client(self) -> None:
+        if self.client_thread and self.client_thread.is_alive():
+            self.client.disconnect()
+            self.client_thread.join(timeout=2)
+        self.client_thread = None
 
     def process_beacon(self, raw_message: str) -> None:
         try:
@@ -124,6 +136,7 @@ class TrackerBot:
                 await update.message.reply_text("Tracking already enabled")
                 return
             self.tracking_enabled = True
+        self.start_client()
         await update.message.reply_text("Tracking enabled")
 
     async def cmd_track_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -132,6 +145,7 @@ class TrackerBot:
                 await update.message.reply_text("Tracking already disabled")
                 return
             self.tracking_enabled = False
+        self.stop_client()
         await update.message.reply_text("Tracking disabled")
 
     async def cmd_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
