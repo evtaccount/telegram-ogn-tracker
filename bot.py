@@ -22,6 +22,7 @@ class TrackerBot:
         self.lock = threading.Lock()
 
         # Telegram command handlers
+        self.dispatcher.add_handler(CommandHandler("start", self.cmd_start))
         self.dispatcher.add_handler(CommandHandler("add", self.cmd_add))
         self.dispatcher.add_handler(CommandHandler("remove", self.cmd_remove))
         self.dispatcher.add_handler(CommandHandler("track_on", self.cmd_track_on))
@@ -76,6 +77,13 @@ class TrackerBot:
         with self.lock:
             if self.target_chat_id is None:
                 self.target_chat_id = chat_id
+
+    def cmd_start(self, update: Update, context: CallbackContext) -> None:
+        """Handle /start by setting the chat and showing basic help."""
+        self.ensure_chat(update.effective_chat.id)
+        update.message.reply_text(
+            "OGN tracker bot ready. Use /add <id> to track gliders."
+        )
 
     def cmd_add(self, update: Update, context: CallbackContext) -> None:
         self.ensure_chat(update.effective_chat.id)

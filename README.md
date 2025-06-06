@@ -19,6 +19,7 @@ a message in a configured chat.
    ```
 
 Commands inside Telegram:
+- `/start` – display a welcome message and set target chat.
 - `/add <id>` – start tracking given OGN id.
 - `/remove <id>` – stop tracking id.
 - `/track_on` – enable tracking.
