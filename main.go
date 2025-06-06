@@ -5,11 +5,14 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"gitlab.eqipe.ch/sgw/go-ogn-client/ogn"
+	aprsparser "gitlab.eqipe.ch/sgw/go-ogn-client/ogn/subparser/aprsparser"
+	flarmparser "gitlab.eqipe.ch/sgw/go-ogn-client/ogn/subparser/flarmparser"
 )
 
 type Position struct {
@@ -21,7 +24,7 @@ type Position struct {
 type TrackerBot struct {
 	bot             *tgbotapi.BotAPI
 	targetChatID    int64
-	trackingIDs     map[string]int
+	trackingAddrs   map[string]int
 	trackingEnabled bool
 	mu              sync.Mutex
 	ognClient       *ogn.Client
@@ -34,10 +37,10 @@ func NewTrackerBot(token string, chatID int64) (*TrackerBot, error) {
 		return nil, err
 	}
 	tb := &TrackerBot{
-		bot:          bot,
-		targetChatID: chatID,
-		trackingIDs:  make(map[string]int),
-		positions:    make(map[string]*Position),
+		bot:           bot,
+		targetChatID:  chatID,
+		trackingAddrs: make(map[string]int),
+		positions:     make(map[string]*Position),
 	}
 	client := ogn.New("", true)
 	client.MessageHandler = tb.handleOGNMessage
@@ -100,11 +103,12 @@ func (tb *TrackerBot) cmdAdd(update tgbotapi.Update) {
 	}
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
-	if _, exists := tb.trackingIDs[args]; exists {
+	args = strings.ToUpper(args)
+	if _, exists := tb.trackingAddrs[args]; exists {
 		tb.reply(update.Message.Chat.ID, args+" already added")
 		return
 	}
-	tb.trackingIDs[args] = 0
+	tb.trackingAddrs[args] = 0
 	tb.reply(update.Message.Chat.ID, "Added "+args)
 }
 
@@ -116,8 +120,9 @@ func (tb *TrackerBot) cmdRemove(update tgbotapi.Update) {
 	}
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
-	if _, exists := tb.trackingIDs[args]; exists {
-		delete(tb.trackingIDs, args)
+	args = strings.ToUpper(args)
+	if _, exists := tb.trackingAddrs[args]; exists {
+		delete(tb.trackingAddrs, args)
 		tb.reply(update.Message.Chat.ID, "Removed "+args)
 	} else {
 		tb.reply(update.Message.Chat.ID, args+" not found")
@@ -150,7 +155,7 @@ func (tb *TrackerBot) cmdList(update tgbotapi.Update) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 	ids := ""
-	for id := range tb.trackingIDs {
+	for id := range tb.trackingAddrs {
 		if ids != "" {
 			ids += ", "
 		}
@@ -199,12 +204,12 @@ func (tb *TrackerBot) reply(chatID int64, text string) {
 
 func (tb *TrackerBot) updatePositions() {
 	tb.mu.Lock()
-	if !tb.trackingEnabled || len(tb.trackingIDs) == 0 || tb.targetChatID == 0 {
+	if !tb.trackingEnabled || len(tb.trackingAddrs) == 0 || tb.targetChatID == 0 {
 		tb.mu.Unlock()
 		return
 	}
-	ids := make([]string, 0, len(tb.trackingIDs))
-	for id := range tb.trackingIDs {
+	ids := make([]string, 0, len(tb.trackingAddrs))
+	for id := range tb.trackingAddrs {
 		ids = append(ids, id)
 	}
 	positions := make(map[string]*Position)
@@ -224,7 +229,7 @@ func (tb *TrackerBot) updatePositions() {
 			"\nTime: " + time.Unix(pos.Timestamp, 0).UTC().Format(time.RFC3339)
 
 		tb.mu.Lock()
-		msgID := tb.trackingIDs[id]
+		msgID := tb.trackingAddrs[id]
 		tb.mu.Unlock()
 
 		if msgID != 0 {
@@ -237,7 +242,7 @@ func (tb *TrackerBot) updatePositions() {
 			sent, err := tb.bot.Send(msg)
 			if err == nil {
 				tb.mu.Lock()
-				tb.trackingIDs[id] = sent.MessageID
+				tb.trackingAddrs[id] = sent.MessageID
 				tb.mu.Unlock()
 			}
 		}
@@ -253,13 +258,22 @@ func (tb *TrackerBot) handleOGNMessage(msg interface{}) {
 	if !ok || pos == nil {
 		return
 	}
+	var addr string
+	switch c := pos.Comment.(type) {
+	case *flarmparser.Beacon:
+		addr = c.Details.Address
+	case *aprsparser.AircraftBeacon:
+		addr = c.Details.Address
+	}
+	addr = strings.ToUpper(addr)
+
 	tb.mu.Lock()
-	if _, tracked := tb.trackingIDs[m.CallSign]; tracked {
+	if _, tracked := tb.trackingAddrs[addr]; tracked {
 		p := &Position{Lat: pos.Latitude, Lon: pos.Longitude}
 		if pos.Time != nil {
 			p.Timestamp = pos.Time.UTC().Unix()
 		}
-		tb.positions[m.CallSign] = p
+		tb.positions[addr] = p
 	}
 	tb.mu.Unlock()
 }
