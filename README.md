@@ -38,3 +38,18 @@ docker-compose up --build
 ```
 
 Environment variable `TELEGRAM_BOT_TOKEN` can be placed in a `.env` file or exported before running compose.
+
+## Python bot
+
+This repository also includes a Python implementation (`bot.py`) with the same command set.
+To run it locally:
+
+1. Install the dependencies
+   ```sh
+   pip install -r requirements.txt
+   ```
+2. Set `TELEGRAM_BOT_TOKEN` environment variable with your bot token.
+3. Start the bot
+   ```sh
+   python bot.py
+   ```
