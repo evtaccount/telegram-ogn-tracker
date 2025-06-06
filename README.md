@@ -6,14 +6,14 @@ Simple Telegram bot written in Python that tracks glider positions from the Open
 
 1. Install the dependencies
    ```sh
-   pip install -r requirements.txt
+   make install
    ```
 2. Set `TELEGRAM_BOT_TOKEN` environment variable with your bot token. The target
    chat will be determined automatically from the first command or can be set
    using `/set_chat`.
 3. Start the bot
    ```sh
-   python bot.py
+   make run
    ```
 
 Commands inside Telegram:
