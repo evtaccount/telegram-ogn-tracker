@@ -7,11 +7,12 @@ from dotenv import load_dotenv
 
 from ogn.client import AprsClient
 from ogn.parser import parse, AprsParseError
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
+    CallbackQueryHandler,
 )
 
 
@@ -24,6 +25,7 @@ class TrackerBot:
         self.tracking_enabled = False
         self.target_chat_id: int | None = None
         self.lock = threading.Lock()
+        self.session_started = False
 
         # Telegram command handlers
         self.app.add_handler(CommandHandler("start", self.cmd_start))
@@ -36,6 +38,8 @@ class TrackerBot:
         self.app.add_handler(CommandHandler("clearid", self.cmd_clear_id))
         self.app.add_handler(CommandHandler("chat_id", self.cmd_chat_id))
         self.app.add_handler(CommandHandler("set_chat", self.cmd_set_chat))
+        self.app.add_handler(CommandHandler("new_session", self.cmd_new_session))
+        self.app.add_handler(CallbackQueryHandler(self.handle_query))
 
         # OGN client (started on /track_on)
         self.client = AprsClient(aprs_user=aprs_user)
@@ -189,6 +193,60 @@ class TrackerBot:
         with self.lock:
             self.target_chat_id = update.effective_chat.id
         await update.message.reply_text(f"Target chat set to {self.target_chat_id}")
+
+    async def cmd_new_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        self.ensure_chat(update.effective_chat.id)
+        with self.lock:
+            if self.session_started:
+                buttons = [
+                    [
+                        InlineKeyboardButton("Начать", callback_data="new_session_start"),
+                        InlineKeyboardButton("Отмена", callback_data="new_session_cancel"),
+                    ]
+                ]
+                await update.message.reply_text(
+                    "Начать новую сессию?",
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                )
+                return
+            self.session_started = True
+        await update.message.reply_text("Новая сессия начата")
+        await update.message.reply_text("Добавьте адреса командой /add <id>")
+
+    async def handle_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        if not query:
+            return
+        await query.answer()
+        data = query.data
+        if data == "new_session_start":
+            await query.edit_message_reply_markup(reply_markup=None)
+            with self.lock:
+                ids_list = ", ".join(self.tracking_ids.keys()) or "нет"
+            buttons = [
+                [
+                    InlineKeyboardButton("Оставить старые", callback_data="keep_old"),
+                    InlineKeyboardButton("Сбросить", callback_data="reset_old"),
+                ]
+            ]
+            await query.message.reply_text(
+                f"Текущие адреса: {ids_list}\nОставить старые или сбросить?",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+        elif data == "new_session_cancel":
+            await query.edit_message_reply_markup(reply_markup=None)
+        elif data in {"keep_old", "reset_old"}:
+            await query.edit_message_reply_markup(reply_markup=None)
+            with self.lock:
+                self.session_started = True
+                self.tracking_enabled = False
+                self.stop_client()
+                if data == "reset_old":
+                    self.tracking_ids.clear()
+                    self.positions.clear()
+            await query.message.reply_text("Новая сессия начата")
+            if data == "reset_old":
+                await query.message.reply_text("Добавьте адреса командой /add <id>")
 
     async def send_updates(self, context: ContextTypes.DEFAULT_TYPE) -> None:
         with self.lock:
