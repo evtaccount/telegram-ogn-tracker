@@ -4,7 +4,7 @@ Simple Telegram bot written in Python that tracks glider positions from the Open
 
 ## Usage
 
-1. Install the dependencies
+1. Install the dependencies (includes python-telegram-bot with job queue support)
    ```sh
    make install
    ```

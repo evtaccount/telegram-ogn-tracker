@@ -46,7 +46,10 @@ class TrackerBot:
         self.client_thread.start()
 
         # Periodic updates every 30 seconds
-        self.app.job_queue.run_repeating(self.send_updates, interval=30, first=30)
+        if self.app.job_queue:
+            self.app.job_queue.run_repeating(self.send_updates, interval=30, first=30)
+        else:
+            logging.warning("JobQueue not available; periodic updates disabled")
 
     def run_client(self) -> None:
         try:
