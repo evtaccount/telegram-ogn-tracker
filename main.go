@@ -30,9 +30,12 @@ func main() {
 // Tracker holds state for tracking gliders.
 // TrackInfo stores state for a single tracked address.
 type TrackInfo struct {
-	MessageID int
-	Position  *parser.PositionMessage
-	Name      string
+	MessageID  int
+	TextID     int
+	Position   *parser.PositionMessage
+	Name       string // optional custom display name from /add
+	Username   string // Telegram username of the user who added the id
+	LastUpdate time.Time
 }
 
 // Tracker holds state for tracking gliders.
@@ -112,26 +115,31 @@ func (t *Tracker) cmdStart(m *tgbotapi.Message) {
 }
 
 func (t *Tracker) cmdAdd(m *tgbotapi.Message) {
-	args := m.CommandArguments()
-	if args == "" {
-		if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Usage: /add <ogn_id>")); err != nil {
+	args := strings.Fields(m.CommandArguments())
+	if len(args) == 0 {
+		if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Usage: /add <ogn_id> [name]")); err != nil {
 			log.Printf("failed to send usage: %v", err)
 		}
 		return
 	}
-	id := shortID(args)
-	name := m.From.UserName
-	if name == "" {
-		name = strings.TrimSpace(m.From.FirstName + " " + m.From.LastName)
+
+	id := shortID(args[0])
+	display := strings.Join(args[1:], " ")
+	username := m.From.UserName
+	if username == "" {
+		username = strings.TrimSpace(m.From.FirstName + " " + m.From.LastName)
 	}
+
 	t.mu.Lock()
 	t.chatID = m.Chat.ID
 	if info, ok := t.tracking[id]; ok {
-		info.Name = name
+		info.Name = display
+		info.Username = username
 	} else {
-		t.tracking[id] = &TrackInfo{Name: name}
+		t.tracking[id] = &TrackInfo{Name: display, Username: username}
 	}
 	t.mu.Unlock()
+
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Added "+id)); err != nil {
 		log.Printf("failed to confirm add: %v", err)
 	}
@@ -199,8 +207,17 @@ func (t *Tracker) cmdList(m *tgbotapi.Message) {
 			ids += ", "
 		}
 		ids += id
+		desc := ""
 		if info.Name != "" {
-			ids += "(" + info.Name + ")"
+			desc = info.Name
+			if info.Username != "" {
+				desc += " (@" + info.Username + ")"
+			}
+		} else if info.Username != "" {
+			desc = "@" + info.Username
+		}
+		if desc != "" {
+			ids += "(" + desc + ")"
 		}
 	}
 	track := "off"
@@ -231,6 +248,7 @@ func (t *Tracker) runClient() {
 		t.mu.Lock()
 		if info, ok := t.tracking[id]; ok {
 			info.Position = msg
+			info.LastUpdate = time.Now()
 			t.tracking[id] = info
 			log.Printf("received beacon for %s (orig %s): lat %.5f lon %.5f", id, origID, msg.Latitude, msg.Longitude)
 		} else {
@@ -267,7 +285,26 @@ func (t *Tracker) sendUpdates() {
 			if info.Position == nil {
 				continue
 			}
+
+			text := "Address: " + id
+			if info.Name != "" || info.Username != "" {
+				text += "\n"
+				if info.Name != "" {
+					text += info.Name
+					if info.Username != "" {
+						text += " (@" + info.Username + ")"
+					}
+				} else {
+					text += "@" + info.Username
+				}
+			}
+			if !info.LastUpdate.IsZero() {
+				text += "\nLast update: " + info.LastUpdate.Format("2006-01-02 15:04:05")
+			}
+
 			msgID := info.MessageID
+			textID := info.TextID
+
 			if msgID != 0 {
 				edit := tgbotapi.EditMessageLiveLocationConfig{
 					BaseEdit: tgbotapi.BaseEdit{
@@ -282,6 +319,12 @@ func (t *Tracker) sendUpdates() {
 				} else {
 					log.Printf("updated location for %s", id)
 				}
+				if textID != 0 {
+					editText := tgbotapi.NewEditMessageText(chatID, textID, text)
+					if _, err := t.bot.Send(editText); err != nil {
+						log.Printf("failed to edit text for %s: %v", id, err)
+					}
+				}
 			} else {
 				loc := tgbotapi.NewLocation(chatID, info.Position.Latitude, info.Position.Longitude)
 				loc.LivePeriod = 86400
@@ -290,16 +333,14 @@ func (t *Tracker) sendUpdates() {
 					log.Printf("failed to send location for %s: %v", id, err)
 					continue
 				}
-				text := "Address: " + id
-				if info.Name != "" {
-					text += " (" + info.Name + ")"
-				}
-				if _, err := t.bot.Send(tgbotapi.NewMessage(chatID, text)); err != nil {
+				textMsg, err := t.bot.Send(tgbotapi.NewMessage(chatID, text))
+				if err != nil {
 					log.Printf("failed to send address message for %s: %v", id, err)
 				}
 				t.mu.Lock()
 				if info, ok := t.tracking[id]; ok {
 					info.MessageID = msg.MessageID
+					info.TextID = textMsg.MessageID
 					t.tracking[id] = info
 				}
 				t.mu.Unlock()
