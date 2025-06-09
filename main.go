@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -105,7 +106,7 @@ func (t *Tracker) cmdAdd(m *tgbotapi.Message) {
 		}
 		return
 	}
-	id := args
+	id := strings.ToUpper(strings.TrimSpace(args))
 	t.mu.Lock()
 	t.chatID = m.Chat.ID
 	t.trackingIDs[id] = 0
@@ -123,7 +124,7 @@ func (t *Tracker) cmdRemove(m *tgbotapi.Message) {
 		}
 		return
 	}
-	id := args
+	id := strings.ToUpper(strings.TrimSpace(args))
 	t.mu.Lock()
 	t.chatID = m.Chat.ID
 	delete(t.trackingIDs, id)
