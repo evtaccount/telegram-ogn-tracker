@@ -26,11 +26,13 @@ func main() {
 
 	// Register bot commands so Telegram can show a menu button.
 	commands := []tgbotapi.BotCommand{
-		{Command: "start", Description: "главное меню"},
-		{Command: "help", Description: "справка"},
-		{Command: "upload_report", Description: "загрузить данные"},
-		{Command: "periods", Description: "показать периоды"},
-		{Command: "reset", Description: "сбросить данные"},
+		{Command: "start", Description: "display a welcome message"},
+		{Command: "add", Description: "track an OGN id"},
+		{Command: "remove", Description: "stop tracking an id"},
+		{Command: "track_on", Description: "enable tracking"},
+		{Command: "track_off", Description: "disable tracking"},
+		{Command: "list", Description: "show tracked ids"},
+		{Command: "help", Description: "show help"},
 	}
 	_, _ = bot.Request(tgbotapi.NewSetMyCommands(commands...))
 
@@ -129,7 +131,7 @@ func (t *Tracker) cmdStart(m *tgbotapi.Message) {
 	t.mu.Lock()
 	t.chatID = m.Chat.ID
 	t.mu.Unlock()
-	msg := tgbotapi.NewMessage(m.Chat.ID, "OGN tracker bot ready. Use /add <id> to track gliders.")
+	msg := tgbotapi.NewMessage(m.Chat.ID, "OGN tracker bot ready. Use /add <id> [name] to track gliders.")
 	// Hide any leftover custom keyboard from older versions of the bot.
 	msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(false)
 	if _, err := t.bot.Send(msg); err != nil {
@@ -257,7 +259,7 @@ func (t *Tracker) cmdList(m *tgbotapi.Message) {
 func (t *Tracker) cmdHelp(m *tgbotapi.Message) {
 	text := strings.Join([]string{
 		"/start - display a welcome message",
-		"/add <id> - start tracking the given OGN id",
+		"/add <id> [name] - start tracking the given OGN id; the optional name is shown in messages",
 		"/remove <id> - stop tracking the id",
 		"/track_on - enable tracking",
 		"/track_off - disable tracking",

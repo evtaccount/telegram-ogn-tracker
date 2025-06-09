@@ -27,7 +27,7 @@ The container reads the token from the `.env` file.
 
 Commands inside Telegram (also accessible via the menu button). The keyboard is hidden automatically when you send `/start`:
 - `/start` – display a welcome message.
-- `/add <id> [name]` – start tracking the given OGN id. If a name is supplied it will appear before your username in the location message.
+- `/add <id> [name]` – start tracking the given OGN id. The optional name may contain spaces and will appear before your username in location messages.
 - `/remove <id>` – stop tracking the id.
 - `/track_on` – enable tracking.
 - `/track_off` – disable tracking.
@@ -40,7 +40,8 @@ longer prefixes like `ICA3FE0E4A`.
 
 When tracking IDs, the bot sends a separate live location message for every
 address. By default the message shows your Telegram username. If you provide a
-name with `/add`, that name is shown followed by your username in parentheses.
+name with `/add`, that name (even with spaces) is shown before your username in
+parentheses.
 The text message below each location also shows when that glider was last seen
 on the network. Each message is updated independently when a new beacon is
 received for that address.
