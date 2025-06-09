@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -183,12 +184,24 @@ func (t *Tracker) cmdStatus(m *tgbotapi.Message) {
 	}
 }
 
+func (t *Tracker) cmdLanding(m *tgbotapi.Message) {
+	t.mu.Lock()
+	t.waitingLanding = true
+	t.landingExpiry = time.Now().Add(2 * time.Minute)
+	t.chatID = m.Chat.ID
+	t.mu.Unlock()
+	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Send landing location within 2 minutes")); err != nil {
+		log.Printf("failed to request landing location: %v", err)
+	}
+}
+
 func (t *Tracker) cmdHelp(m *tgbotapi.Message) {
 	text := strings.Join([]string{
 		"/start - display a welcome message",
 		"/start_session - enable full commands or reset the session",
 		"/add <id> [name] - start tracking the given OGN id; the optional name is shown in messages",
 		"/remove <id> - stop tracking the id",
+		"/landing - set default landing location",
 		"/track_on - enable tracking",
 		"/track_off - disable tracking",
 		"/list - show current tracked ids and state",
@@ -197,5 +210,20 @@ func (t *Tracker) cmdHelp(m *tgbotapi.Message) {
 	}, "\n")
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, text)); err != nil {
 		log.Printf("failed to send help: %v", err)
+	}
+}
+
+func (t *Tracker) handleLandingLocation(m *tgbotapi.Message) {
+	t.mu.Lock()
+	waiting := t.waitingLanding && time.Now().Before(t.landingExpiry)
+	if waiting {
+		t.landing = &Coordinates{Latitude: m.Location.Latitude, Longitude: m.Location.Longitude}
+		t.waitingLanding = false
+	}
+	t.mu.Unlock()
+	if waiting {
+		if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Landing location saved")); err != nil {
+			log.Printf("failed to confirm landing location: %v", err)
+		}
 	}
 }
