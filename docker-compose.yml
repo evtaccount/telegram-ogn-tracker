@@ -1,8 +1,11 @@
 version: '3.8'
 services:
   ogn-tracker:
-    container_name: ogn-tracker
     build: .
-    env_file:
-      - .env
-    restart: unless-stopped
+    container_name: ogn-tracker
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+    volumes:
+      - ./data:/root/data
+      - ./logs:/root/logs
+    restart: always
