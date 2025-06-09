@@ -33,6 +33,10 @@ Commands inside Telegram:
 - `/track_off` – disable tracking.
 - `/list` – show current tracked ids and state.
 
+Tracking compares only the last six characters of each callsign. This means you
+can add IDs in their short form (e.g. `FE0E4A`) and they will match beacons with
+longer prefixes like `ICA3FE0E4A`.
+
 When tracking IDs, the bot sends a live location message for each address. The
 address and associated user name are posted in a reply to that message. If a new
 beacon arrives for the same address, the live location message is updated with
