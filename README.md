@@ -34,8 +34,6 @@ Commands inside Telegram:
 - `/list` – show current tracked ids and state (with the Telegram name of the user who added each).
 - `/help` – show the list of available commands.
 
-After sending `/start`, the bot displays a keyboard with a **Commands** button that shows this list at any time.
-
 Tracking compares only the last six characters of each callsign. This means you
 can add IDs in their short form (e.g. `FE0E4A`) and they will match beacons with
 longer prefixes like `ICA3FE0E4A`.
