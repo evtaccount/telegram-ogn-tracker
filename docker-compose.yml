@@ -1,0 +1,8 @@
+version: '3.8'
+services:
+  ogn-tracker:
+    container_name: ogn-tracker
+    build: .
+    env_file:
+      - .env
+    restart: unless-stopped

@@ -13,9 +13,17 @@ This repository contains a Go implementation (`main.go`) of a Telegram bot that 
    ```
    This starts `go run main.go`.
 3. To build a standalone binary:
-   ```sh
-   make build-go
-   ```
+    ```sh
+    make build-go
+    ```
+
+Alternatively you can run the bot with Docker:
+
+```sh
+docker-compose up -d
+```
+
+The container reads the token from the `.env` file.
 
 Commands inside Telegram:
 - `/start` – display a welcome message.
