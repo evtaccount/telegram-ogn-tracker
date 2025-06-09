@@ -19,14 +19,22 @@ type TrackInfo struct {
 	LastUpdate time.Time
 }
 
+type Coordinates struct {
+	Latitude  float64
+	Longitude float64
+}
+
 type Tracker struct {
-	bot           *tgbotapi.BotAPI
-	aprs          *client.Client
-	tracking      map[string]*TrackInfo
-	mu            sync.Mutex
-	trackingOn    bool
-	chatID        int64
-	sessionActive bool
+	bot            *tgbotapi.BotAPI
+	aprs           *client.Client
+	tracking       map[string]*TrackInfo
+	mu             sync.Mutex
+	trackingOn     bool
+	chatID         int64
+	sessionActive  bool
+	landing        *Coordinates
+	waitingLanding bool
+	landingExpiry  time.Time
 }
 
 func shortID(id string) string {
@@ -39,11 +47,14 @@ func shortID(id string) string {
 
 func NewTracker(bot *tgbotapi.BotAPI) *Tracker {
 	return &Tracker{
-		bot:           bot,
-		aprs:          client.New("N0CALL", ""),
-		tracking:      make(map[string]*TrackInfo),
-		trackingOn:    false,
-		sessionActive: false,
+		bot:            bot,
+		aprs:           client.New("N0CALL", ""),
+		tracking:       make(map[string]*TrackInfo),
+		trackingOn:     false,
+		sessionActive:  false,
+		landing:        nil,
+		waitingLanding: false,
+		landingExpiry:  time.Time{},
 	}
 }
 
@@ -70,7 +81,16 @@ func (t *Tracker) Run() {
 			continue
 		}
 
-		switch update.Message.Command() {
+		cmd := update.Message.Command()
+		if cmd != "" {
+			t.mu.Lock()
+			if cmd != "landing" {
+				t.waitingLanding = false
+			}
+			t.mu.Unlock()
+		}
+
+		switch cmd {
 		case "start":
 			t.cmdStart(update.Message)
 		case "start_session":
@@ -87,8 +107,14 @@ func (t *Tracker) Run() {
 			t.cmdList(update.Message)
 		case "status":
 			t.cmdStatus(update.Message)
+		case "landing":
+			t.cmdLanding(update.Message)
 		case "help":
 			t.cmdHelp(update.Message)
+		}
+
+		if update.Message.Location != nil {
+			t.handleLandingLocation(update.Message)
 		}
 	}
 }

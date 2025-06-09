@@ -37,6 +37,7 @@ Commands inside Telegram:
  - `/start_session` – start or reset the session and unlock commands.
 - `/add <id> [name]` – start tracking the given OGN id. The optional name may contain spaces and will appear before your username in location messages.
 - `/remove <id>` – stop tracking the id.
+- `/landing` – set the default landing location. After sending the command, send a Telegram location within two minutes.
 - `/track_on` – enable tracking (replaced by `/track_off` once active).
 - `/track_off` – disable tracking and keep addresses.
 - `/list` – show current tracked ids and state (with the Telegram name of the user who added each).
