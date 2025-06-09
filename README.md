@@ -26,12 +26,14 @@ docker-compose up -d
 The container reads the token from the `.env` file.
 
 Commands inside Telegram (available via the menu button or the on-screen keyboard below the input field):
-- `/start` – display a welcome message.
+- `/start` – display a welcome message and show how to enable commands.
+- `/start_session` – unlock all bot commands.
 - `/add <id> [name]` – start tracking the given OGN id. The optional name may contain spaces and will appear before your username in location messages.
 - `/remove <id>` – stop tracking the id.
-- `/track_on` – enable tracking.
-- `/track_off` – disable tracking.
+- `/track_on` – enable tracking (hidden if already enabled).
+- `/track_off` – disable tracking (hidden until tracking is enabled).
 - `/list` – show current tracked ids and state (with the Telegram name of the user who added each).
+- `/status` – show current state.
 - `/help` – show the list of available commands.
 
 Tracking compares only the last six characters of each callsign. This means you
