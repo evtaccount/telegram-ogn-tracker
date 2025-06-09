@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -131,6 +132,15 @@ func (t *Tracker) cmdStart(m *tgbotapi.Message) {
 	t.mu.Lock()
 	t.chatID = m.Chat.ID
 	t.mu.Unlock()
+	// Ensure the chat shows a menu button with the list of commands.
+	btn, _ := json.Marshal(map[string]string{"type": "commands"})
+	params := tgbotapi.Params{
+		"chat_id":     strconv.FormatInt(m.Chat.ID, 10),
+		"menu_button": string(btn),
+	}
+	if _, err := t.bot.MakeRequest("setChatMenuButton", params); err != nil {
+		log.Printf("failed to set chat menu button: %v", err)
+	}
 	msg := tgbotapi.NewMessage(m.Chat.ID, "OGN tracker bot ready. Use /add <id> [name] to track gliders.")
 	// Hide any leftover custom keyboard from older versions of the bot.
 	msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(false)
