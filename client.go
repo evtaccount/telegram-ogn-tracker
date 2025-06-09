@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"time"
 
@@ -46,6 +47,7 @@ func (t *Tracker) sendUpdates() {
 			return
 		}
 		chatID := t.chatID
+		landing := t.landing
 		local := make(map[string]*TrackInfo)
 		for id, info := range t.tracking {
 			cp := *info
@@ -72,6 +74,10 @@ func (t *Tracker) sendUpdates() {
 			}
 			if !info.LastUpdate.IsZero() {
 				text += "\nLast update: " + info.LastUpdate.Format("2006-01-02 15:04:05")
+			}
+			if landing != nil {
+				dist := distanceKm(info.Position.Latitude, info.Position.Longitude, landing.Latitude, landing.Longitude)
+				text += fmt.Sprintf("\nDistance to landing: %.1f km", dist)
 			}
 
 			msgID := info.MessageID
