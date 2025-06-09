@@ -1,11 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,20 +27,6 @@ func main() {
 	// Register default bot commands so Telegram shows the menu button.
 	// Initially only /start and /help are available. Additional commands
 	// will be added after the user starts a session.
-	commands := []tgbotapi.BotCommand{
-		{Command: "start", Description: "display a welcome message"},
-		{Command: "help", Description: "show help"},
-	}
-	_, _ = bot.Request(tgbotapi.NewSetMyCommands(commands...))
-
-	// Replace the old "Commands" button with a chat menu button on the left
-	// side of the input field that shows the list of available commands.
-	btn, _ := json.Marshal(map[string]string{"type": "commands"})
-	params := tgbotapi.Params{"menu_button": string(btn)}
-	if _, err := bot.MakeRequest("setChatMenuButton", params); err != nil {
-		log.Printf("failed to set menu button: %v", err)
-	}
-
 	tracker := NewTracker(bot)
 	tracker.Run()
 }
@@ -66,44 +50,7 @@ type Tracker struct {
 	mu            sync.Mutex
 	trackingOn    bool
 	chatID        int64
-	startCalled   bool
 	sessionActive bool
-}
-
-// updateCommands sets the Telegram command list for the given chat based on
-// the current state so that the menu button only shows available commands.
-func (t *Tracker) updateCommands(chatID int64) {
-	var cmds []tgbotapi.BotCommand
-	cmds = append(cmds,
-		tgbotapi.BotCommand{Command: "start", Description: "display a welcome message"},
-		tgbotapi.BotCommand{Command: "help", Description: "show help"},
-	)
-
-	if !t.startCalled {
-		// nothing else
-	} else if !t.sessionActive {
-		cmds = append(cmds, tgbotapi.BotCommand{Command: "start_session", Description: "enable full commands"})
-		cmds = append(cmds, tgbotapi.BotCommand{Command: "status", Description: "show current state"})
-	} else {
-		cmds = append(cmds,
-			tgbotapi.BotCommand{Command: "add", Description: "track an OGN id"},
-			tgbotapi.BotCommand{Command: "remove", Description: "stop tracking an id"},
-		)
-		if t.trackingOn {
-			cmds = append(cmds, tgbotapi.BotCommand{Command: "track_off", Description: "disable tracking"})
-		} else {
-			cmds = append(cmds, tgbotapi.BotCommand{Command: "track_on", Description: "enable tracking"})
-		}
-		cmds = append(cmds,
-			tgbotapi.BotCommand{Command: "list", Description: "show tracked ids"},
-			tgbotapi.BotCommand{Command: "status", Description: "show current state"},
-		)
-	}
-
-	cfg := tgbotapi.NewSetMyCommandsWithScope(tgbotapi.NewBotCommandScopeChat(chatID), cmds...)
-	if _, err := t.bot.Request(cfg); err != nil {
-		log.Printf("failed to set commands: %v", err)
-	}
 }
 
 // shortID returns the last 6 characters of id in upper case. If id is shorter
@@ -123,7 +70,6 @@ func NewTracker(bot *tgbotapi.BotAPI) *Tracker {
 		aprs:          client.New("N0CALL", ""),
 		tracking:      make(map[string]*TrackInfo),
 		trackingOn:    false,
-		startCalled:   false,
 		sessionActive: false,
 	}
 }
@@ -182,18 +128,9 @@ func (t *Tracker) isTrusted(userID int64) bool {
 func (t *Tracker) cmdStart(m *tgbotapi.Message) {
 	t.mu.Lock()
 	t.chatID = m.Chat.ID
+	t.sessionActive = false
 	t.mu.Unlock()
-	// Ensure the chat shows a menu button with the list of commands.
-	btn, _ := json.Marshal(map[string]string{"type": "commands"})
-	params := tgbotapi.Params{
-		"chat_id":     strconv.FormatInt(m.Chat.ID, 10),
-		"menu_button": string(btn),
-	}
-	if _, err := t.bot.MakeRequest("setChatMenuButton", params); err != nil {
-		log.Printf("failed to set chat menu button: %v", err)
-	}
-	t.startCalled = true
-	t.updateCommands(m.Chat.ID)
+
 	msg := tgbotapi.NewMessage(m.Chat.ID, "This bot tracks gliders on the OGN network. After /start, run /start_session to enable commands.")
 	msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(false)
 	if _, err := t.bot.Send(msg); err != nil {
@@ -216,7 +153,6 @@ func (t *Tracker) cmdStartSession(m *tgbotapi.Message) {
 	t.chatID = m.Chat.ID
 	t.mu.Unlock()
 
-	t.updateCommands(m.Chat.ID)
 	msg := tgbotapi.NewMessage(m.Chat.ID, "Session started. You can now use all commands.")
 	msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(false)
 	if _, err := t.bot.Send(msg); err != nil {
@@ -292,7 +228,6 @@ func (t *Tracker) cmdTrackOn(m *tgbotapi.Message) {
 	t.trackingOn = true
 	t.chatID = m.Chat.ID
 	t.mu.Unlock()
-	t.updateCommands(m.Chat.ID)
 	go t.runClient()
 	go t.sendUpdates()
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Tracking enabled")); err != nil {
@@ -312,7 +247,6 @@ func (t *Tracker) cmdTrackOff(m *tgbotapi.Message) {
 	t.trackingOn = false
 	t.mu.Unlock()
 	t.aprs.Disconnect()
-	t.updateCommands(m.Chat.ID)
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Tracking disabled")); err != nil {
 		log.Printf("failed to confirm track_off: %v", err)
 	}
