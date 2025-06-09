@@ -84,6 +84,9 @@ func (t *Tracker) commandKeyboard() tgbotapi.ReplyKeyboardMarkup {
 		rows = append(rows, tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton("/start_session"),
 		))
+		rows = append(rows, tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("/status"),
+		))
 	} else {
 		rows = append(rows, tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton("/add"),
@@ -119,6 +122,7 @@ func (t *Tracker) updateCommands(chatID int64) {
 		// nothing else
 	} else if !t.sessionActive {
 		cmds = append(cmds, tgbotapi.BotCommand{Command: "start_session", Description: "enable full commands"})
+		cmds = append(cmds, tgbotapi.BotCommand{Command: "status", Description: "show current state"})
 	} else {
 		cmds = append(cmds,
 			tgbotapi.BotCommand{Command: "add", Description: "track an OGN id"},
@@ -255,9 +259,18 @@ func (t *Tracker) cmdStart(m *tgbotapi.Message) {
 // cmdStartSession enables the full command set for the chat.
 func (t *Tracker) cmdStartSession(m *tgbotapi.Message) {
 	t.mu.Lock()
+	if t.sessionActive {
+		// reset existing session
+		t.tracking = make(map[string]*TrackInfo)
+		if t.trackingOn {
+			t.trackingOn = false
+			t.aprs.Disconnect()
+		}
+	}
 	t.sessionActive = true
 	t.chatID = m.Chat.ID
 	t.mu.Unlock()
+
 	t.updateCommands(m.Chat.ID)
 	msg := tgbotapi.NewMessage(m.Chat.ID, "Session started. You can now use all commands.")
 	msg.ReplyMarkup = t.commandKeyboard()
