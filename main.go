@@ -27,11 +27,10 @@ func main() {
 	}
 
 	// Register default bot commands so Telegram shows the menu button.
-	// Initially only /start and /help are available. Additional commands
-	// will be added after the user starts a session.
+	// Initially only /start is available. Additional commands will be added
+	// after the user starts a session.
 	commands := []tgbotapi.BotCommand{
 		{Command: "start", Description: "display a welcome message"},
-		{Command: "help", Description: "show help"},
 	}
 	_, _ = bot.Request(tgbotapi.NewSetMyCommands(commands...))
 
@@ -73,13 +72,9 @@ type Tracker struct {
 // commandKeyboard builds the reply keyboard based on current state.
 func (t *Tracker) commandKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	var rows [][]tgbotapi.KeyboardButton
-	rows = append(rows, tgbotapi.NewKeyboardButtonRow(
-		tgbotapi.NewKeyboardButton("/start"),
-		tgbotapi.NewKeyboardButton("/help"),
-	))
 
 	if !t.startCalled {
-		// only /start and /help
+		// no commands before /start
 	} else if !t.sessionActive {
 		rows = append(rows, tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton("/start_session"),
@@ -116,7 +111,6 @@ func (t *Tracker) commandKeyboard() tgbotapi.ReplyKeyboardMarkup {
 func (t *Tracker) updateCommands(chatID int64) {
 	var cmds []tgbotapi.BotCommand
 	cmds = append(cmds, tgbotapi.BotCommand{Command: "start", Description: "display a welcome message"})
-	cmds = append(cmds, tgbotapi.BotCommand{Command: "help", Description: "show help"})
 
 	if !t.startCalled {
 		// nothing else
@@ -224,8 +218,6 @@ func (t *Tracker) Run() {
 			t.cmdList(update.Message)
 		case "status":
 			t.cmdStatus(update.Message)
-		case "help":
-			t.cmdHelp(update.Message)
 		}
 	}
 }
@@ -416,25 +408,6 @@ func (t *Tracker) cmdStatus(m *tgbotapi.Message) {
 	text := fmt.Sprintf("Tracking %s. %d address(es) added.", status, count)
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, text)); err != nil {
 		log.Printf("failed to send status: %v", err)
-	}
-}
-
-func (t *Tracker) cmdHelp(m *tgbotapi.Message) {
-	text := strings.Join([]string{
-		"/start - display a welcome message",
-		"/start_session - enable all commands",
-		"/add <id> [name] - start tracking the given OGN id; the optional name is shown in messages",
-		"/remove <id> - stop tracking the id",
-		"/track_on - enable tracking",
-		"/track_off - disable tracking",
-		"/list - show current tracked ids and state",
-		"/status - show current state",
-		"/help - show this help",
-	}, "\n")
-	msg := tgbotapi.NewMessage(m.Chat.ID, text)
-	msg.ReplyMarkup = t.commandKeyboard()
-	if _, err := t.bot.Send(msg); err != nil {
-		log.Printf("failed to send help: %v", err)
 	}
 }
 

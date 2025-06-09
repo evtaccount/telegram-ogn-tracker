@@ -27,13 +27,13 @@ The container reads the token from the `.env` file.
 
 The set of available commands depends on the current session state:
 
-1. Before you run `/start` only `/start` and `/help` are available.
+1. Before you run `/start` only `/start` is available.
 2. After `/start` you can also use `/start_session` and `/status`.
 3. Running `/start_session` unlocks the full command set: `/add`, `/remove`, `/track_on`, `/list`, and `/status`. When tracking is active, `/track_on` is replaced by `/track_off`.
 4. Calling `/start_session` again clears all added addresses and restarts the session.
 
 Commands inside Telegram (available via the menu button or the on-screen keyboard below the input field):
-- `/start` – display a welcome message and show how to enable commands.
+- `/start` – display a welcome message and show how to enable commands (this command is not shown on the keyboard).
 - `/start_session` – start or reset the session and unlock commands.
 - `/add <id> [name]` – start tracking the given OGN id. The optional name may contain spaces and will appear before your username in location messages.
 - `/remove <id>` – stop tracking the id.
@@ -41,7 +41,6 @@ Commands inside Telegram (available via the menu button or the on-screen keyboar
 - `/track_off` – disable tracking and keep addresses.
 - `/list` – show current tracked ids and state (with the Telegram name of the user who added each).
 - `/status` – show current state.
-- `/help` – show the list of available commands.
 
 Tracking compares only the last six characters of each callsign. This means you
 can add IDs in their short form (e.g. `FE0E4A`) and they will match beacons with
