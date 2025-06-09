@@ -11,7 +11,7 @@ This repository contains a Go implementation (`main.go`) of a Telegram bot that 
    ```sh
    make run
    ```
-   This starts `go run main.go`.
+   This starts `go run .`.
 3. To build a standalone binary:
     ```sh
     make build-go
