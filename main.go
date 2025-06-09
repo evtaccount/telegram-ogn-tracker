@@ -1,11 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,27 +24,9 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Register bot commands so Telegram can show a menu button.
-	commands := []tgbotapi.BotCommand{
-		{Command: "start", Description: "display a welcome message"},
-		{Command: "add", Description: "track an OGN id"},
-		{Command: "remove", Description: "stop tracking an id"},
-		{Command: "track_on", Description: "enable tracking"},
-		{Command: "track_off", Description: "disable tracking"},
-		{Command: "list", Description: "show tracked ids"},
-		{Command: "status", Description: "show current state"},
-		{Command: "help", Description: "show help"},
-	}
-	_, _ = bot.Request(tgbotapi.NewSetMyCommands(commands...))
-
-	// Replace the old "Commands" button with a chat menu button on the left
-	// side of the input field that shows the list of available commands.
-	btn, _ := json.Marshal(map[string]string{"type": "commands"})
-	params := tgbotapi.Params{"menu_button": string(btn)}
-	if _, err := bot.MakeRequest("setChatMenuButton", params); err != nil {
-		log.Printf("failed to set menu button: %v", err)
-	}
-
+	// Register default bot commands so Telegram shows the menu button.
+	// Initially only /start and /help are available. Additional commands
+	// will be added after the user starts a session.
 	tracker := NewTracker(bot)
 	tracker.Run()
 }
@@ -64,12 +44,13 @@ type TrackInfo struct {
 
 // Tracker holds state for tracking gliders.
 type Tracker struct {
-	bot        *tgbotapi.BotAPI
-	aprs       *client.Client
-	tracking   map[string]*TrackInfo
-	mu         sync.Mutex
-	trackingOn bool
-	chatID     int64
+	bot           *tgbotapi.BotAPI
+	aprs          *client.Client
+	tracking      map[string]*TrackInfo
+	mu            sync.Mutex
+	trackingOn    bool
+	chatID        int64
+	sessionActive bool
 }
 
 // shortID returns the last 6 characters of id in upper case. If id is shorter
@@ -85,9 +66,11 @@ func shortID(id string) string {
 // NewTracker creates a tracker with given Telegram bot.
 func NewTracker(bot *tgbotapi.BotAPI) *Tracker {
 	return &Tracker{
-		bot:      bot,
-		aprs:     client.New("N0CALL", ""),
-		tracking: make(map[string]*TrackInfo),
+		bot:           bot,
+		aprs:          client.New("N0CALL", ""),
+		tracking:      make(map[string]*TrackInfo),
+		trackingOn:    false,
+		sessionActive: false,
 	}
 }
 
@@ -99,8 +82,16 @@ func (t *Tracker) Run() {
 	updates := t.bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		if update.Message == nil { // ignore non-message updates
+		if update.MyChatMember != nil {
+			// ignore chat member updates
+		}
+
+		if update.Message == nil {
 			continue
+		}
+
+		if update.Message.NewChatMembers != nil {
+			// ignore join messages
 		}
 
 		if !t.isTrusted(update.Message.From.ID) {
@@ -110,6 +101,8 @@ func (t *Tracker) Run() {
 		switch update.Message.Command() {
 		case "start":
 			t.cmdStart(update.Message)
+		case "start_session":
+			t.cmdStartSession(update.Message)
 		case "add":
 			t.cmdAdd(update.Message)
 		case "remove":
@@ -135,21 +128,35 @@ func (t *Tracker) isTrusted(userID int64) bool {
 func (t *Tracker) cmdStart(m *tgbotapi.Message) {
 	t.mu.Lock()
 	t.chatID = m.Chat.ID
+	t.sessionActive = false
 	t.mu.Unlock()
-	// Ensure the chat shows a menu button with the list of commands.
-	btn, _ := json.Marshal(map[string]string{"type": "commands"})
-	params := tgbotapi.Params{
-		"chat_id":     strconv.FormatInt(m.Chat.ID, 10),
-		"menu_button": string(btn),
-	}
-	if _, err := t.bot.MakeRequest("setChatMenuButton", params); err != nil {
-		log.Printf("failed to set chat menu button: %v", err)
-	}
-	msg := tgbotapi.NewMessage(m.Chat.ID, "OGN tracker bot ready. Use /add <id> [name] to track gliders.")
-	// Hide any leftover custom keyboard from older versions of the bot.
+
+	msg := tgbotapi.NewMessage(m.Chat.ID, "This bot tracks gliders on the OGN network. After /start, run /start_session to enable commands.")
 	msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(false)
 	if _, err := t.bot.Send(msg); err != nil {
 		log.Printf("failed to send start message: %v", err)
+	}
+}
+
+// cmdStartSession enables the full command set for the chat.
+func (t *Tracker) cmdStartSession(m *tgbotapi.Message) {
+	t.mu.Lock()
+	if t.sessionActive {
+		// reset existing session
+		t.tracking = make(map[string]*TrackInfo)
+		if t.trackingOn {
+			t.trackingOn = false
+			t.aprs.Disconnect()
+		}
+	}
+	t.sessionActive = true
+	t.chatID = m.Chat.ID
+	t.mu.Unlock()
+
+	msg := tgbotapi.NewMessage(m.Chat.ID, "Session started. You can now use all commands.")
+	msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(false)
+	if _, err := t.bot.Send(msg); err != nil {
+		log.Printf("failed to send start_session message: %v", err)
 	}
 }
 
@@ -294,6 +301,7 @@ func (t *Tracker) cmdStatus(m *tgbotapi.Message) {
 func (t *Tracker) cmdHelp(m *tgbotapi.Message) {
 	text := strings.Join([]string{
 		"/start - display a welcome message",
+		"/start_session - enable full commands or reset the session",
 		"/add <id> [name] - start tracking the given OGN id; the optional name is shown in messages",
 		"/remove <id> - stop tracking the id",
 		"/track_on - enable tracking",
