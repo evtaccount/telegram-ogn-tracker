@@ -25,7 +25,7 @@ docker-compose up -d
 
 The container reads the token from the `.env` file.
 
-Commands inside Telegram:
+Commands inside Telegram (also accessible via the menu button). The keyboard is hidden automatically when you send `/start`:
 - `/start` – display a welcome message.
 - `/add <id> [name]` – start tracking the given OGN id. If a name is supplied it will appear before your username in the location message.
 - `/remove <id>` – stop tracking the id.
