@@ -9,7 +9,7 @@ import (
 	ogn "gitlab.eqipe.ch/sgw/go-ogn-client/ogn"
 )
 
-const targetChatID int64 = 0 // replace with your chat id
+// ownerID is the Telegram ID of the user allowed to control the bot.
 const ownerID int64 = 182255461
 
 func main() {

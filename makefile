@@ -1,19 +1,16 @@
-.PHONY: install lint run run-go stop build up down rebuild logs reset cleanup
+.PHONY: run vet build-go stop build up down rebuild logs reset cleanup
 
 IMAGE_NAME := telegram-ogn-tracker
 SERVICE := ogn-tracker
 
-install:
-	pip install -r requirements.txt
-
-lint:
-	python3 -m py_compile bot.py
-
-run:
-	python bot.py
-
-run-go:
+run: vet
 	go run main.go
+
+vet:
+	go vet ./...
+
+build-go:
+	go build -o ogn-go-bot main.go
 
 stop:
 	docker stop $(SERVICE) || true
