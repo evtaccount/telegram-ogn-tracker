@@ -32,6 +32,7 @@ func main() {
 type TrackInfo struct {
 	MessageID int
 	Position  *parser.PositionMessage
+	Name      string
 }
 
 // Tracker holds state for tracking gliders.
@@ -119,10 +120,16 @@ func (t *Tracker) cmdAdd(m *tgbotapi.Message) {
 		return
 	}
 	id := shortID(args)
+	name := m.From.UserName
+	if name == "" {
+		name = strings.TrimSpace(m.From.FirstName + " " + m.From.LastName)
+	}
 	t.mu.Lock()
 	t.chatID = m.Chat.ID
-	if _, ok := t.tracking[id]; !ok {
-		t.tracking[id] = &TrackInfo{}
+	if info, ok := t.tracking[id]; ok {
+		info.Name = name
+	} else {
+		t.tracking[id] = &TrackInfo{Name: name}
 	}
 	t.mu.Unlock()
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Added "+id)); err != nil {
@@ -187,11 +194,14 @@ func (t *Tracker) cmdTrackOff(m *tgbotapi.Message) {
 func (t *Tracker) cmdList(m *tgbotapi.Message) {
 	t.mu.Lock()
 	ids := ""
-	for id := range t.tracking {
+	for id, info := range t.tracking {
 		if ids != "" {
 			ids += ", "
 		}
 		ids += id
+		if info.Name != "" {
+			ids += "(" + info.Name + ")"
+		}
 	}
 	track := "off"
 	if t.trackingOn {
@@ -280,7 +290,11 @@ func (t *Tracker) sendUpdates() {
 					log.Printf("failed to send location for %s: %v", id, err)
 					continue
 				}
-				if _, err := t.bot.Send(tgbotapi.NewMessage(chatID, "Address: "+id)); err != nil {
+				text := "Address: " + id
+				if info.Name != "" {
+					text += " (" + info.Name + ")"
+				}
+				if _, err := t.bot.Send(tgbotapi.NewMessage(chatID, text)); err != nil {
 					log.Printf("failed to send address message for %s: %v", id, err)
 				}
 				t.mu.Lock()
