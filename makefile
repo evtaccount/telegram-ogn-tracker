@@ -9,6 +9,9 @@ lint:
 run:
 	python bot.py
 
+run-go:
+	go run main.go
+
 stop:
 	docker stop ogn-tracker || true
 	docker rm ogn-tracker || true

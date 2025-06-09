@@ -1,4 +1,5 @@
 # Telegram OGN Tracker
+This repository now includes a basic Go implementation (`main.go`) that performs similar tracking functionality using the [go-ogn-client](https://gitlab.eqipe.ch/sgw/go-ogn-client) library.
 
 Simple Telegram bot written in Python that tracks glider positions from the Open Glider Network (OGN). The chat for updates is configured in the code and cannot be changed at runtime. The bot processes commands only from trusted users.
 
@@ -17,6 +18,12 @@ Simple Telegram bot written in Python that tracks glider positions from the Open
    ```sh
    make run
    ```
+
+Alternatively, build and run the Go version:
+```sh
+go build -o ogn-go-bot main.go
+./ogn-go-bot
+```
 
 Commands inside Telegram:
 - `/start` – display a welcome message.
