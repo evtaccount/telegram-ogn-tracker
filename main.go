@@ -25,17 +25,14 @@ func main() {
 
 	// Register bot commands so Telegram can show a menu button.
 	commands := []tgbotapi.BotCommand{
-		{Command: "start", Description: "display a welcome message"},
-		{Command: "add", Description: "start tracking the given OGN id"},
-		{Command: "remove", Description: "stop tracking the id"},
-		{Command: "track_on", Description: "enable tracking"},
-		{Command: "track_off", Description: "disable tracking"},
-		{Command: "list", Description: "show tracked ids"},
-		{Command: "help", Description: "show command list"},
+		{Command: "start", Description: "главное меню"},
+		{Command: "help", Description: "справка"},
+		{Command: "upload_report", Description: "загрузить данные"},
+		{Command: "periods", Description: "показать периоды"},
+		{Command: "reset", Description: "сбросить данные"},
+		{Command: "commands", Description: "список команд"},
 	}
-	if _, err := bot.Request(tgbotapi.NewSetMyCommands(commands...)); err != nil {
-		log.Printf("failed to set bot commands: %v", err)
-	}
+	_, _ = bot.Request(tgbotapi.NewSetMyCommands(commands...))
 
 	tracker := NewTracker(bot)
 	tracker.Run()
@@ -112,10 +109,6 @@ func (t *Tracker) Run() {
 			t.cmdList(update.Message)
 		case "help":
 			t.cmdHelp(update.Message)
-		default:
-			if strings.EqualFold(update.Message.Text, "Commands") {
-				t.cmdHelp(update.Message)
-			}
 		}
 	}
 }
@@ -128,11 +121,7 @@ func (t *Tracker) cmdStart(m *tgbotapi.Message) {
 	t.mu.Lock()
 	t.chatID = m.Chat.ID
 	t.mu.Unlock()
-	keyboard := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("Commands")),
-	)
 	msg := tgbotapi.NewMessage(m.Chat.ID, "OGN tracker bot ready. Use /add <id> to track gliders.")
-	msg.ReplyMarkup = keyboard
 	if _, err := t.bot.Send(msg); err != nil {
 		log.Printf("failed to send start message: %v", err)
 	}
