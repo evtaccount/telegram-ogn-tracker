@@ -1,14 +1,42 @@
-.PHONY: install lint run stop
+.PHONY: run vet build-go stop build up down rebuild logs reset cleanup
 
-install:
-	pip install -r requirements.txt
+IMAGE_NAME := telegram-ogn-tracker
+SERVICE := ogn-tracker
 
-lint:
-	python3 -m py_compile bot.py
+run: vet
+	go run main.go
 
-run:
-	python bot.py
+vet:
+	go vet ./...
+
+build-go:
+	go build -o ogn-go-bot main.go
 
 stop:
-	docker stop ogn-tracker || true
-	docker rm ogn-tracker || true
+	docker stop $(SERVICE) || true
+	docker rm $(SERVICE) || true
+
+build:
+	docker-compose build --no-cache
+
+up:
+	docker-compose up -d
+
+down:
+	docker-compose down
+
+rebuild: down build up
+
+logs:
+	docker logs -f $(SERVICE)
+
+reset:
+	rm -rf data/* logs/*
+
+cleanup:
+	docker stack rm $(IMAGE_NAME) || true
+	docker-compose down || true
+	docker rm -f $(shell docker ps -aq) || true
+	docker rmi $(IMAGE_NAME) $(IMAGE_NAME)-$(SERVICE) || true
+	docker image prune -f
+	docker network rm $(IMAGE_NAME)_default || true

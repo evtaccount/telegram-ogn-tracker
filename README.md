@@ -1,35 +1,37 @@
 # Telegram OGN Tracker
-
-Simple Telegram bot written in Python that tracks glider positions from the Open Glider Network (OGN). The chat for updates is configured in the code and cannot be changed at runtime. The bot processes commands only from trusted users.
+This repository contains a Go implementation (`main.go`) of a Telegram bot that tracks glider positions from the [Open Glider Network](https://www.glidernet.org/). It uses the [go-ogn-client](https://gitlab.eqipe.ch/sgw/go-ogn-client) library for receiving beacons.
 
 ## Usage
 
-1. Install the dependencies (includes python-telegram-bot with job queue support)
-   ```sh
-   make install
-   ```
-2. Create a `.env` file in this directory with your bot token:
+1. Create a `.env` file in this directory with your bot token:
    ```
    TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_TOKEN
    ```
-   Set the `TARGET_CHAT_ID` constant in `bot.py` to the chat where updates should be sent.
-3. Start the bot
+2. Run the bot:
    ```sh
    make run
    ```
+   This starts `go run main.go`.
+3. To build a standalone binary:
+    ```sh
+    make build-go
+    ```
+
+Alternatively you can run the bot with Docker:
+
+```sh
+docker-compose up -d
+```
+
+The container reads the token from the `.env` file.
 
 Commands inside Telegram:
 - `/start` – display a welcome message.
-- `/add <id>` – start tracking given OGN id.
-- `/remove <id>` – stop tracking id.
-- `/clear` – remove all tracked ids.
-- `/clearid <id>` – remove the specified id.
+- `/add <id>` – start tracking the given OGN id.
+- `/remove <id>` – stop tracking the id.
 - `/track_on` – enable tracking.
 - `/track_off` – disable tracking.
-- `/list` – show current state.
-- `/new_session` – start a new tracking session.
-- `/add_trusted <user_id>` – add a user to the trusted list (owner only).
-- `/list_trusted` – list trusted users (owner only).
+- `/list` – show current tracked ids and state.
 
 When tracking IDs, the bot sends a live location message for each address. The
 address and associated user name are posted in a reply to that message. If a new
