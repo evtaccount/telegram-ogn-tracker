@@ -31,15 +31,16 @@ Commands inside Telegram:
 - `/remove <id>` – stop tracking the id.
 - `/track_on` – enable tracking.
 - `/track_off` – disable tracking.
-- `/list` – show current tracked ids and state.
+- `/list` – show current tracked ids and state (with the Telegram name of the user who added each).
 
 Tracking compares only the last six characters of each callsign. This means you
 can add IDs in their short form (e.g. `FE0E4A`) and they will match beacons with
 longer prefixes like `ICA3FE0E4A`.
 
 When tracking IDs, the bot sends a separate live location message for every
-address. Each message is updated independently when a new beacon is received for
-that address.
+address. The bot remembers the Telegram name or username of the user who added
+each address and posts it alongside the ID. Each message is updated
+independently when a new beacon is received for that address.
 
 The bot prints debug logs for every received OGN line and any parse errors to help diagnose missing data.
 
