@@ -38,5 +38,7 @@ address and associated user name are posted in a reply to that message. If a new
 beacon arrives for the same address, the live location message is updated with
 the new coordinates instead of sending a new message.
 
+The bot prints debug logs for every received OGN line and any parse errors to help diagnose missing data.
+
 Positions are requested from `https://api.glidernet.org/tracker/<id>`; you may
 need to adjust this endpoint if the API changes.
