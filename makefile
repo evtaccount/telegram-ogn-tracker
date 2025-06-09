@@ -4,13 +4,13 @@ IMAGE_NAME := telegram-ogn-tracker
 SERVICE := ogn-tracker
 
 run: vet
-        go run .
+	go run .
 
 vet:
 	go vet ./...
 
 build-go:
-        go build -o ogn-go-bot .
+	go build -o ogn-go-bot .
 
 stop:
 	docker stop $(SERVICE) || true
