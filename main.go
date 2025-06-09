@@ -12,9 +12,6 @@ import (
 	"ogn/parser"
 )
 
-// ownerID is the Telegram ID of the user allowed to control the bot.
-const ownerID int64 = 182255461
-
 func main() {
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
 	if token == "" {
@@ -85,7 +82,7 @@ func (t *Tracker) Run() {
 }
 
 func (t *Tracker) isTrusted(userID int64) bool {
-	return userID == ownerID
+	return true
 }
 
 func (t *Tracker) cmdStart(m *tgbotapi.Message) {
@@ -197,8 +194,10 @@ func (t *Tracker) cmdList(m *tgbotapi.Message) {
 func (t *Tracker) runClient() {
 	log.Println("OGN client started")
 	err := t.aprs.Run(func(line string) {
+		log.Printf("raw OGN line: %s", line)
 		msg, err := parser.Parse(line)
 		if err != nil {
+			log.Printf("failed to parse line: %v", err)
 			return
 		}
 		id := msg.Callsign
@@ -206,6 +205,8 @@ func (t *Tracker) runClient() {
 		if _, ok := t.trackingIDs[id]; ok {
 			t.positions[id] = msg
 			log.Printf("received beacon for %s: lat %.5f lon %.5f", id, msg.Latitude, msg.Longitude)
+		} else {
+			log.Printf("ignoring untracked id %s", id)
 		}
 		t.mu.Unlock()
 	}, true)
