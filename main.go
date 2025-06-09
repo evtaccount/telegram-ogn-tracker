@@ -7,7 +7,8 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	ogn "gitlab.eqipe.ch/sgw/go-ogn-client/ogn"
+	"ogn/client"
+	"ogn/parser"
 )
 
 // ownerID is the Telegram ID of the user allowed to control the bot.
@@ -31,9 +32,9 @@ func main() {
 // Tracker holds state for tracking gliders.
 type Tracker struct {
 	bot         *tgbotapi.BotAPI
-	aprs        *ogn.Client
+	aprs        *client.Client
 	trackingIDs map[string]int
-	positions   map[string]*ogn.APRSMessage
+	positions   map[string]*parser.PositionMessage
 	mu          sync.Mutex
 	tracking    bool
 	chatID      int64
@@ -43,9 +44,9 @@ type Tracker struct {
 func NewTracker(bot *tgbotapi.BotAPI) *Tracker {
 	return &Tracker{
 		bot:         bot,
-		aprs:        ogn.New("", true),
+		aprs:        client.New("N0CALL", ""),
 		trackingIDs: make(map[string]int),
-		positions:   make(map[string]*ogn.APRSMessage),
+		positions:   make(map[string]*parser.PositionMessage),
 	}
 }
 
@@ -163,7 +164,7 @@ func (t *Tracker) cmdTrackOff(m *tgbotapi.Message) {
 	}
 	t.tracking = false
 	t.mu.Unlock()
-	t.aprs.Close()
+	t.aprs.Disconnect()
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Tracking disabled")); err != nil {
 		log.Printf("failed to confirm track_off: %v", err)
 	}
@@ -193,26 +194,21 @@ func (t *Tracker) cmdList(m *tgbotapi.Message) {
 }
 
 func (t *Tracker) runClient() {
-	t.aprs.MessageHandler = func(v interface{}) {
-		m, ok := v.(*ogn.APRSMessage)
-		if !ok {
+	log.Println("OGN client started")
+	err := t.aprs.Run(func(line string) {
+		msg, err := parser.Parse(line)
+		if err != nil {
 			return
 		}
-		pos, ok := m.Body.(*ogn.APRSPosition)
-		if !ok {
-			return
-		}
-		id := m.CallSign
+		id := msg.Callsign
 		t.mu.Lock()
 		if _, ok := t.trackingIDs[id]; ok {
-			t.positions[id] = &ogn.APRSMessage{CallSign: m.CallSign, Body: pos}
-			log.Printf("received beacon for %s: lat %.5f lon %.5f", id, pos.Latitude, pos.Longitude)
+			t.positions[id] = msg
+			log.Printf("received beacon for %s: lat %.5f lon %.5f", id, msg.Latitude, msg.Longitude)
 		}
 		t.mu.Unlock()
-	}
-
-	log.Println("OGN client started")
-	if err := t.aprs.Run(); err != nil {
+	}, true)
+	if err != nil {
 		log.Printf("OGN client error: %v", err)
 	}
 	log.Println("OGN client stopped")
@@ -233,17 +229,13 @@ func (t *Tracker) sendUpdates() {
 		for id, msgID := range t.trackingIDs {
 			ids[id] = msgID
 		}
-		positions := make(map[string]*ogn.APRSMessage)
+		positions := make(map[string]*parser.PositionMessage)
 		for id, msg := range t.positions {
 			positions[id] = msg
 		}
 		t.mu.Unlock()
 
-		for id, msg := range positions {
-			pos, ok := msg.Body.(*ogn.APRSPosition)
-			if !ok {
-				continue
-			}
+		for id, pos := range positions {
 			msgID := ids[id]
 			if msgID != 0 {
 				edit := tgbotapi.EditMessageLiveLocationConfig{
