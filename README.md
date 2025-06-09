@@ -37,10 +37,9 @@ Tracking compares only the last six characters of each callsign. This means you
 can add IDs in their short form (e.g. `FE0E4A`) and they will match beacons with
 longer prefixes like `ICA3FE0E4A`.
 
-When tracking IDs, the bot sends a live location message for each address. The
-address and associated user name are posted in a reply to that message. If a new
-beacon arrives for the same address, the live location message is updated with
-the new coordinates instead of sending a new message.
+When tracking IDs, the bot sends a separate live location message for every
+address. Each message is updated independently when a new beacon is received for
+that address.
 
 The bot prints debug logs for every received OGN line and any parse errors to help diagnose missing data.
 
