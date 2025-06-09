@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -33,6 +34,7 @@ func main() {
 		{Command: "track_on", Description: "enable tracking"},
 		{Command: "track_off", Description: "disable tracking"},
 		{Command: "list", Description: "show tracked ids"},
+		{Command: "status", Description: "show current state"},
 		{Command: "help", Description: "show help"},
 	}
 	_, _ = bot.Request(tgbotapi.NewSetMyCommands(commands...))
@@ -118,6 +120,8 @@ func (t *Tracker) Run() {
 			t.cmdTrackOff(update.Message)
 		case "list":
 			t.cmdList(update.Message)
+		case "status":
+			t.cmdStatus(update.Message)
 		case "help":
 			t.cmdHelp(update.Message)
 		}
@@ -200,6 +204,13 @@ func (t *Tracker) cmdRemove(m *tgbotapi.Message) {
 
 func (t *Tracker) cmdTrackOn(m *tgbotapi.Message) {
 	t.mu.Lock()
+	if len(t.tracking) == 0 {
+		t.mu.Unlock()
+		if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "No addresses added")); err != nil {
+			log.Printf("failed to send no addresses message: %v", err)
+		}
+		return
+	}
 	if t.trackingOn {
 		t.mu.Unlock()
 		if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Tracking already enabled")); err != nil {
@@ -266,6 +277,20 @@ func (t *Tracker) cmdList(m *tgbotapi.Message) {
 	}
 }
 
+func (t *Tracker) cmdStatus(m *tgbotapi.Message) {
+	t.mu.Lock()
+	status := "disabled"
+	if t.trackingOn {
+		status = "enabled"
+	}
+	count := len(t.tracking)
+	t.mu.Unlock()
+	text := fmt.Sprintf("Tracking %s. %d address(es) added.", status, count)
+	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, text)); err != nil {
+		log.Printf("failed to send status: %v", err)
+	}
+}
+
 func (t *Tracker) cmdHelp(m *tgbotapi.Message) {
 	text := strings.Join([]string{
 		"/start - display a welcome message",
@@ -274,6 +299,7 @@ func (t *Tracker) cmdHelp(m *tgbotapi.Message) {
 		"/track_on - enable tracking",
 		"/track_off - disable tracking",
 		"/list - show current tracked ids and state",
+		"/status - show current state",
 		"/help - show this help",
 	}, "\n")
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, text)); err != nil {
