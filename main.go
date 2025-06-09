@@ -214,23 +214,19 @@ func (t *Tracker) cmdTrackOff(m *tgbotapi.Message) {
 
 func (t *Tracker) cmdList(m *tgbotapi.Message) {
 	t.mu.Lock()
-	ids := ""
-	for id, info := range t.tracking {
-		if ids != "" {
-			ids += ", "
-		}
-		ids += id
-		desc := ""
+	var users []string
+	for _, info := range t.tracking {
+		entry := ""
 		if info.Name != "" {
-			desc = info.Name
+			entry = info.Name
 			if info.Username != "" {
-				desc += " (@" + info.Username + ")"
+				entry += " (@" + info.Username + ")"
 			}
 		} else if info.Username != "" {
-			desc = "@" + info.Username
+			entry = "@" + info.Username
 		}
-		if desc != "" {
-			ids += "(" + desc + ")"
+		if entry != "" {
+			users = append(users, entry)
 		}
 	}
 	track := "off"
@@ -238,10 +234,11 @@ func (t *Tracker) cmdList(m *tgbotapi.Message) {
 		track = "on"
 	}
 	t.mu.Unlock()
-	text := "Tracking: " + track + "\nIDs: " + ids
-	if ids == "" {
-		text = "Tracking: " + track + "\nIDs: none"
+	list := strings.Join(users, "\n")
+	if list == "" {
+		list = "none"
 	}
+	text := "Tracking: " + track + "\n" + list
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, text)); err != nil {
 		log.Printf("failed to send list: %v", err)
 	}
