@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"os"
 	"strings"
@@ -30,9 +31,16 @@ func main() {
 		{Command: "upload_report", Description: "загрузить данные"},
 		{Command: "periods", Description: "показать периоды"},
 		{Command: "reset", Description: "сбросить данные"},
-		{Command: "commands", Description: "список команд"},
 	}
 	_, _ = bot.Request(tgbotapi.NewSetMyCommands(commands...))
+
+	// Replace the old "Commands" button with a chat menu button on the left
+	// side of the input field that shows the list of available commands.
+	btn, _ := json.Marshal(map[string]string{"type": "commands"})
+	params := tgbotapi.Params{"menu_button": string(btn)}
+	if _, err := bot.MakeRequest("setChatMenuButton", params); err != nil {
+		log.Printf("failed to set menu button: %v", err)
+	}
 
 	tracker := NewTracker(bot)
 	tracker.Run()
@@ -122,6 +130,8 @@ func (t *Tracker) cmdStart(m *tgbotapi.Message) {
 	t.chatID = m.Chat.ID
 	t.mu.Unlock()
 	msg := tgbotapi.NewMessage(m.Chat.ID, "OGN tracker bot ready. Use /add <id> to track gliders.")
+	// Hide any leftover custom keyboard from older versions of the bot.
+	msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(false)
 	if _, err := t.bot.Send(msg); err != nil {
 		log.Printf("failed to send start message: %v", err)
 	}
