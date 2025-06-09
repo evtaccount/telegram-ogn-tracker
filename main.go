@@ -23,6 +23,20 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Register bot commands so Telegram can show a menu button.
+	commands := []tgbotapi.BotCommand{
+		{Command: "start", Description: "display a welcome message"},
+		{Command: "add", Description: "start tracking the given OGN id"},
+		{Command: "remove", Description: "stop tracking the id"},
+		{Command: "track_on", Description: "enable tracking"},
+		{Command: "track_off", Description: "disable tracking"},
+		{Command: "list", Description: "show tracked ids"},
+		{Command: "help", Description: "show command list"},
+	}
+	if _, err := bot.Request(tgbotapi.NewSetMyCommands(commands...)); err != nil {
+		log.Printf("failed to set bot commands: %v", err)
+	}
+
 	tracker := NewTracker(bot)
 	tracker.Run()
 }
@@ -96,6 +110,12 @@ func (t *Tracker) Run() {
 			t.cmdTrackOff(update.Message)
 		case "list":
 			t.cmdList(update.Message)
+		case "help":
+			t.cmdHelp(update.Message)
+		default:
+			if strings.EqualFold(update.Message.Text, "Commands") {
+				t.cmdHelp(update.Message)
+			}
 		}
 	}
 }
@@ -108,7 +128,11 @@ func (t *Tracker) cmdStart(m *tgbotapi.Message) {
 	t.mu.Lock()
 	t.chatID = m.Chat.ID
 	t.mu.Unlock()
+	keyboard := tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("Commands")),
+	)
 	msg := tgbotapi.NewMessage(m.Chat.ID, "OGN tracker bot ready. Use /add <id> to track gliders.")
+	msg.ReplyMarkup = keyboard
 	if _, err := t.bot.Send(msg); err != nil {
 		log.Printf("failed to send start message: %v", err)
 	}
@@ -231,6 +255,21 @@ func (t *Tracker) cmdList(m *tgbotapi.Message) {
 	}
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, text)); err != nil {
 		log.Printf("failed to send list: %v", err)
+	}
+}
+
+func (t *Tracker) cmdHelp(m *tgbotapi.Message) {
+	text := strings.Join([]string{
+		"/start - display a welcome message",
+		"/add <id> - start tracking the given OGN id",
+		"/remove <id> - stop tracking the id",
+		"/track_on - enable tracking",
+		"/track_off - disable tracking",
+		"/list - show current tracked ids and state",
+		"/help - show this help",
+	}, "\n")
+	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, text)); err != nil {
+		log.Printf("failed to send help: %v", err)
 	}
 }
 
