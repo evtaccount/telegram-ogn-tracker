@@ -72,6 +72,30 @@ type Tracker struct {
 	chatID     int64
 }
 
+// commandKeyboard returns a keyboard with all available bot commands.
+func commandKeyboard() tgbotapi.ReplyKeyboardMarkup {
+	kb := tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("/start"),
+			tgbotapi.NewKeyboardButton("/help"),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("/add"),
+			tgbotapi.NewKeyboardButton("/remove"),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("/track_on"),
+			tgbotapi.NewKeyboardButton("/track_off"),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("/list"),
+			tgbotapi.NewKeyboardButton("/status"),
+		),
+	)
+	kb.ResizeKeyboard = true
+	return kb
+}
+
 // shortID returns the last 6 characters of id in upper case. If id is shorter
 // than 6 characters it returns the whole string in upper case.
 func shortID(id string) string {
@@ -99,8 +123,32 @@ func (t *Tracker) Run() {
 	updates := t.bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		if update.Message == nil { // ignore non-message updates
+		if update.MyChatMember != nil {
+			if update.MyChatMember.NewChatMember.User.ID == t.bot.Self.ID &&
+				update.MyChatMember.NewChatMember.Status != "left" &&
+				update.MyChatMember.NewChatMember.Status != "kicked" {
+				msg := tgbotapi.NewMessage(update.MyChatMember.Chat.ID, "Available commands:")
+				msg.ReplyMarkup = commandKeyboard()
+				if _, err := t.bot.Send(msg); err != nil {
+					log.Printf("failed to send join keyboard: %v", err)
+				}
+			}
+		}
+
+		if update.Message == nil {
 			continue
+		}
+
+		if update.Message.NewChatMembers != nil {
+			for _, u := range update.Message.NewChatMembers {
+				if u.ID == t.bot.Self.ID {
+					msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Available commands:")
+					msg.ReplyMarkup = commandKeyboard()
+					if _, err := t.bot.Send(msg); err != nil {
+						log.Printf("failed to send join keyboard: %v", err)
+					}
+				}
+			}
 		}
 
 		if !t.isTrusted(update.Message.From.ID) {
@@ -146,8 +194,7 @@ func (t *Tracker) cmdStart(m *tgbotapi.Message) {
 		log.Printf("failed to set chat menu button: %v", err)
 	}
 	msg := tgbotapi.NewMessage(m.Chat.ID, "OGN tracker bot ready. Use /add <id> [name] to track gliders.")
-	// Hide any leftover custom keyboard from older versions of the bot.
-	msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(false)
+	msg.ReplyMarkup = commandKeyboard()
 	if _, err := t.bot.Send(msg); err != nil {
 		log.Printf("failed to send start message: %v", err)
 	}
@@ -302,7 +349,9 @@ func (t *Tracker) cmdHelp(m *tgbotapi.Message) {
 		"/status - show current state",
 		"/help - show this help",
 	}, "\n")
-	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, text)); err != nil {
+	msg := tgbotapi.NewMessage(m.Chat.ID, text)
+	msg.ReplyMarkup = commandKeyboard()
+	if _, err := t.bot.Send(msg); err != nil {
 		log.Printf("failed to send help: %v", err)
 	}
 }
