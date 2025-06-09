@@ -1,11 +1,11 @@
 package main
 
 import (
-	"log"
-	"os"
-	"strings"
-	"sync"
-	"time"
+        "log"
+        "os"
+        "strings"
+        "sync"
+        "time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"ogn/client"
@@ -36,6 +36,16 @@ type Tracker struct {
 	mu          sync.Mutex
 	tracking    bool
 	chatID      int64
+}
+
+// shortID returns the last 6 characters of id in upper case. If id is shorter
+// than 6 characters it returns the whole string in upper case.
+func shortID(id string) string {
+        id = strings.ToUpper(strings.TrimSpace(id))
+        if len(id) <= 6 {
+                return id
+        }
+        return id[len(id)-6:]
 }
 
 // NewTracker creates a tracker with given Telegram bot.
@@ -103,10 +113,10 @@ func (t *Tracker) cmdAdd(m *tgbotapi.Message) {
 		}
 		return
 	}
-	id := strings.ToUpper(strings.TrimSpace(args))
-	t.mu.Lock()
-	t.chatID = m.Chat.ID
-	t.trackingIDs[id] = 0
+        id := shortID(args)
+        t.mu.Lock()
+        t.chatID = m.Chat.ID
+        t.trackingIDs[id] = 0
 	t.mu.Unlock()
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Added "+id)); err != nil {
 		log.Printf("failed to confirm add: %v", err)
@@ -121,10 +131,10 @@ func (t *Tracker) cmdRemove(m *tgbotapi.Message) {
 		}
 		return
 	}
-	id := strings.ToUpper(strings.TrimSpace(args))
-	t.mu.Lock()
-	t.chatID = m.Chat.ID
-	delete(t.trackingIDs, id)
+        id := shortID(args)
+        t.mu.Lock()
+        t.chatID = m.Chat.ID
+        delete(t.trackingIDs, id)
 	delete(t.positions, id)
 	t.mu.Unlock()
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Removed "+id)); err != nil {
@@ -200,13 +210,14 @@ func (t *Tracker) runClient() {
 			log.Printf("failed to parse line: %v", err)
 			return
 		}
-		id := msg.Callsign
-		t.mu.Lock()
-		if _, ok := t.trackingIDs[id]; ok {
-			t.positions[id] = msg
-			log.Printf("received beacon for %s: lat %.5f lon %.5f", id, msg.Latitude, msg.Longitude)
-		} else {
-			log.Printf("ignoring untracked id %s", id)
+                origID := msg.Callsign
+                id := shortID(origID)
+                t.mu.Lock()
+                if _, ok := t.trackingIDs[id]; ok {
+                        t.positions[id] = msg
+                        log.Printf("received beacon for %s (orig %s): lat %.5f lon %.5f", id, origID, msg.Latitude, msg.Longitude)
+                } else {
+                        log.Printf("ignoring untracked id %s", origID)
 		}
 		t.mu.Unlock()
 	}, true)
