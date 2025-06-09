@@ -1,11 +1,11 @@
 package main
 
 import (
-        "log"
-        "os"
-        "strings"
-        "sync"
-        "time"
+	"log"
+	"os"
+	"strings"
+	"sync"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"ogn/client"
@@ -28,33 +28,38 @@ func main() {
 }
 
 // Tracker holds state for tracking gliders.
+// TrackInfo stores state for a single tracked address.
+type TrackInfo struct {
+	MessageID int
+	Position  *parser.PositionMessage
+}
+
+// Tracker holds state for tracking gliders.
 type Tracker struct {
-	bot         *tgbotapi.BotAPI
-	aprs        *client.Client
-	trackingIDs map[string]int
-	positions   map[string]*parser.PositionMessage
-	mu          sync.Mutex
-	tracking    bool
-	chatID      int64
+	bot        *tgbotapi.BotAPI
+	aprs       *client.Client
+	tracking   map[string]*TrackInfo
+	mu         sync.Mutex
+	trackingOn bool
+	chatID     int64
 }
 
 // shortID returns the last 6 characters of id in upper case. If id is shorter
 // than 6 characters it returns the whole string in upper case.
 func shortID(id string) string {
-        id = strings.ToUpper(strings.TrimSpace(id))
-        if len(id) <= 6 {
-                return id
-        }
-        return id[len(id)-6:]
+	id = strings.ToUpper(strings.TrimSpace(id))
+	if len(id) <= 6 {
+		return id
+	}
+	return id[len(id)-6:]
 }
 
 // NewTracker creates a tracker with given Telegram bot.
 func NewTracker(bot *tgbotapi.BotAPI) *Tracker {
 	return &Tracker{
-		bot:         bot,
-		aprs:        client.New("N0CALL", ""),
-		trackingIDs: make(map[string]int),
-		positions:   make(map[string]*parser.PositionMessage),
+		bot:      bot,
+		aprs:     client.New("N0CALL", ""),
+		tracking: make(map[string]*TrackInfo),
 	}
 }
 
@@ -113,10 +118,12 @@ func (t *Tracker) cmdAdd(m *tgbotapi.Message) {
 		}
 		return
 	}
-        id := shortID(args)
-        t.mu.Lock()
-        t.chatID = m.Chat.ID
-        t.trackingIDs[id] = 0
+	id := shortID(args)
+	t.mu.Lock()
+	t.chatID = m.Chat.ID
+	if _, ok := t.tracking[id]; !ok {
+		t.tracking[id] = &TrackInfo{}
+	}
 	t.mu.Unlock()
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Added "+id)); err != nil {
 		log.Printf("failed to confirm add: %v", err)
@@ -131,11 +138,10 @@ func (t *Tracker) cmdRemove(m *tgbotapi.Message) {
 		}
 		return
 	}
-        id := shortID(args)
-        t.mu.Lock()
-        t.chatID = m.Chat.ID
-        delete(t.trackingIDs, id)
-	delete(t.positions, id)
+	id := shortID(args)
+	t.mu.Lock()
+	t.chatID = m.Chat.ID
+	delete(t.tracking, id)
 	t.mu.Unlock()
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Removed "+id)); err != nil {
 		log.Printf("failed to confirm remove: %v", err)
@@ -144,14 +150,14 @@ func (t *Tracker) cmdRemove(m *tgbotapi.Message) {
 
 func (t *Tracker) cmdTrackOn(m *tgbotapi.Message) {
 	t.mu.Lock()
-	if t.tracking {
+	if t.trackingOn {
 		t.mu.Unlock()
 		if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Tracking already enabled")); err != nil {
 			log.Printf("failed to confirm track_on: %v", err)
 		}
 		return
 	}
-	t.tracking = true
+	t.trackingOn = true
 	t.chatID = m.Chat.ID
 	t.mu.Unlock()
 	go t.runClient()
@@ -163,14 +169,14 @@ func (t *Tracker) cmdTrackOn(m *tgbotapi.Message) {
 
 func (t *Tracker) cmdTrackOff(m *tgbotapi.Message) {
 	t.mu.Lock()
-	if !t.tracking {
+	if !t.trackingOn {
 		t.mu.Unlock()
 		if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Tracking already disabled")); err != nil {
 			log.Printf("failed to confirm track_off: %v", err)
 		}
 		return
 	}
-	t.tracking = false
+	t.trackingOn = false
 	t.mu.Unlock()
 	t.aprs.Disconnect()
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Tracking disabled")); err != nil {
@@ -181,14 +187,14 @@ func (t *Tracker) cmdTrackOff(m *tgbotapi.Message) {
 func (t *Tracker) cmdList(m *tgbotapi.Message) {
 	t.mu.Lock()
 	ids := ""
-	for id := range t.trackingIDs {
+	for id := range t.tracking {
 		if ids != "" {
 			ids += ", "
 		}
 		ids += id
 	}
 	track := "off"
-	if t.tracking {
+	if t.trackingOn {
 		track = "on"
 	}
 	t.mu.Unlock()
@@ -210,14 +216,15 @@ func (t *Tracker) runClient() {
 			log.Printf("failed to parse line: %v", err)
 			return
 		}
-                origID := msg.Callsign
-                id := shortID(origID)
-                t.mu.Lock()
-                if _, ok := t.trackingIDs[id]; ok {
-                        t.positions[id] = msg
-                        log.Printf("received beacon for %s (orig %s): lat %.5f lon %.5f", id, origID, msg.Latitude, msg.Longitude)
-                } else {
-                        log.Printf("ignoring untracked id %s", origID)
+		origID := msg.Callsign
+		id := shortID(origID)
+		t.mu.Lock()
+		if info, ok := t.tracking[id]; ok {
+			info.Position = msg
+			t.tracking[id] = info
+			log.Printf("received beacon for %s (orig %s): lat %.5f lon %.5f", id, origID, msg.Latitude, msg.Longitude)
+		} else {
+			log.Printf("ignoring untracked id %s", origID)
 		}
 		t.mu.Unlock()
 	}, true)
@@ -233,31 +240,32 @@ func (t *Tracker) sendUpdates() {
 	defer ticker.Stop()
 	for range ticker.C {
 		t.mu.Lock()
-		if !t.tracking {
+		if !t.trackingOn {
 			t.mu.Unlock()
 			return
 		}
 		chatID := t.chatID
-		ids := make(map[string]int)
-		for id, msgID := range t.trackingIDs {
-			ids[id] = msgID
-		}
-		positions := make(map[string]*parser.PositionMessage)
-		for id, msg := range t.positions {
-			positions[id] = msg
+		local := make(map[string]*TrackInfo)
+		for id, info := range t.tracking {
+			// copy pointer to avoid holding lock
+			cp := *info
+			local[id] = &cp
 		}
 		t.mu.Unlock()
 
-		for id, pos := range positions {
-			msgID := ids[id]
+		for id, info := range local {
+			if info.Position == nil {
+				continue
+			}
+			msgID := info.MessageID
 			if msgID != 0 {
 				edit := tgbotapi.EditMessageLiveLocationConfig{
 					BaseEdit: tgbotapi.BaseEdit{
 						ChatID:    chatID,
 						MessageID: msgID,
 					},
-					Latitude:  pos.Latitude,
-					Longitude: pos.Longitude,
+					Latitude:  info.Position.Latitude,
+					Longitude: info.Position.Longitude,
 				}
 				if _, err := t.bot.Request(edit); err != nil {
 					log.Printf("failed to edit location for %s: %v", id, err)
@@ -265,7 +273,7 @@ func (t *Tracker) sendUpdates() {
 					log.Printf("updated location for %s", id)
 				}
 			} else {
-				loc := tgbotapi.NewLocation(chatID, pos.Latitude, pos.Longitude)
+				loc := tgbotapi.NewLocation(chatID, info.Position.Latitude, info.Position.Longitude)
 				loc.LivePeriod = 86400
 				msg, err := t.bot.Send(loc)
 				if err != nil {
@@ -276,7 +284,10 @@ func (t *Tracker) sendUpdates() {
 					log.Printf("failed to send address message for %s: %v", id, err)
 				}
 				t.mu.Lock()
-				t.trackingIDs[id] = msg.MessageID
+				if info, ok := t.tracking[id]; ok {
+					info.MessageID = msg.MessageID
+					t.tracking[id] = info
+				}
 				t.mu.Unlock()
 				log.Printf("sent location for %s", id)
 			}
