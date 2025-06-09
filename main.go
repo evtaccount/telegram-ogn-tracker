@@ -1,10 +1,8 @@
 package main
 
 import (
-	"encoding/json"
 	"log"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,11 +37,7 @@ func main() {
 
 	// Replace the old "Commands" button with a chat menu button on the left
 	// side of the input field that shows the list of available commands.
-	btn, _ := json.Marshal(map[string]string{"type": "commands"})
-	params := tgbotapi.Params{"menu_button": string(btn)}
-	if _, err := bot.MakeRequest("setChatMenuButton", params); err != nil {
-		log.Printf("failed to set menu button: %v", err)
-	}
+	setCommandMenuButton(bot, 0)
 
 	tracker := NewTracker(bot)
 	tracker.Run()
@@ -78,6 +72,24 @@ func shortID(id string) string {
 		return id
 	}
 	return id[len(id)-6:]
+}
+
+// setCommandMenuButton ensures Telegram shows a menu button with the list of
+// bot commands. If chatID is 0 the setting is applied globally.
+func setCommandMenuButton(bot *tgbotapi.BotAPI, chatID int64) {
+	params := make(tgbotapi.Params)
+	if chatID != 0 {
+		params.AddNonZero64("chat_id", chatID)
+	}
+	_ = params.AddInterface("menu_button", map[string]string{"type": "commands"})
+	resp, err := bot.MakeRequest("setChatMenuButton", params)
+	if err != nil {
+		log.Printf("failed to set chat menu button: %v", err)
+		return
+	}
+	if !resp.Ok {
+		log.Printf("setChatMenuButton failed: %s", resp.Description)
+	}
 }
 
 // NewTracker creates a tracker with given Telegram bot.
@@ -133,14 +145,7 @@ func (t *Tracker) cmdStart(m *tgbotapi.Message) {
 	t.chatID = m.Chat.ID
 	t.mu.Unlock()
 	// Ensure the chat shows a menu button with the list of commands.
-	btn, _ := json.Marshal(map[string]string{"type": "commands"})
-	params := tgbotapi.Params{
-		"chat_id":     strconv.FormatInt(m.Chat.ID, 10),
-		"menu_button": string(btn),
-	}
-	if _, err := t.bot.MakeRequest("setChatMenuButton", params); err != nil {
-		log.Printf("failed to set chat menu button: %v", err)
-	}
+	setCommandMenuButton(t.bot, m.Chat.ID)
 	msg := tgbotapi.NewMessage(m.Chat.ID, "OGN tracker bot ready. Use /add <id> [name] to track gliders.")
 	// Hide any leftover custom keyboard from older versions of the bot.
 	msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(false)
