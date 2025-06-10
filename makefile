@@ -1,4 +1,4 @@
-.PHONY: run vet build-go stop build up down rebuild logs reset cleanup
+.PHONY: run vet build-go stop build up down rebuild logs reset cleanup prune-images
 
 IMAGE_NAME := telegram-ogn-tracker
 SERVICE := ogn-tracker
@@ -17,7 +17,8 @@ stop:
 	docker rm $(SERVICE) || true
 
 build:
-	docker-compose build --no-cache
+	docker-compose build --no-cache --force-rm
+	$(MAKE) prune-images
 
 up:
 	docker-compose up -d
@@ -26,6 +27,9 @@ down:
 	docker-compose down
 
 rebuild: down build up
+
+prune-images:
+	docker image prune -f
 
 logs:
 	docker logs -f $(SERVICE)

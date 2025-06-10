@@ -1,7 +1,11 @@
 version: '3.8'
 services:
   ogn-tracker:
-    build: .
+    image: telegram-ogn-tracker:latest
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
     container_name: ogn-tracker
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
