@@ -57,6 +57,24 @@ func shortID(id string) string {
 	return id[len(id)-6:]
 }
 
+// updateFilter rebuilds the APRS filter based on the currently tracked IDs.
+// When tracking is active, the client connection is restarted so the new
+// filter takes effect.
+func (t *Tracker) updateFilter() {
+	ids := make([]string, 0, len(t.tracking))
+	for id := range t.tracking {
+		ids = append(ids, id)
+	}
+	if len(ids) > 0 {
+		t.aprs.Filter = "b/" + strings.Join(ids, "/")
+	} else {
+		t.aprs.Filter = ""
+	}
+	if t.trackingOn {
+		t.aprs.Disconnect()
+	}
+}
+
 func NewTracker(bot *tgbotapi.BotAPI) *Tracker {
 	return &Tracker{
 		bot:            bot,

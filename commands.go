@@ -37,6 +37,7 @@ func (t *Tracker) cmdStartSession(m *tgbotapi.Message) {
 	}
 	t.sessionActive = true
 	t.chatID = m.Chat.ID
+	t.updateFilter()
 	t.mu.Unlock()
 
 	msg := tgbotapi.NewMessage(m.Chat.ID, "Session started. You can now use all commands.")
@@ -70,6 +71,7 @@ func (t *Tracker) cmdAdd(m *tgbotapi.Message) {
 	} else {
 		t.tracking[id] = &TrackInfo{Name: display, Username: username}
 	}
+	t.updateFilter()
 	t.mu.Unlock()
 
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Added "+id)); err != nil {
@@ -89,6 +91,7 @@ func (t *Tracker) cmdRemove(m *tgbotapi.Message) {
 	t.mu.Lock()
 	t.chatID = m.Chat.ID
 	delete(t.tracking, id)
+	t.updateFilter()
 	t.mu.Unlock()
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Removed "+id)); err != nil {
 		log.Printf("failed to confirm remove: %v", err)
@@ -112,6 +115,7 @@ func (t *Tracker) cmdTrackOn(m *tgbotapi.Message) {
 		return
 	}
 	t.trackingOn = true
+	t.updateFilter()
 	t.chatID = m.Chat.ID
 	t.mu.Unlock()
 	go t.runClient()
