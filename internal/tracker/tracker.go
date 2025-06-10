@@ -125,6 +125,8 @@ func (t *Tracker) Run() {
 			t.cmdStart(update.Message)
 		case "start_session":
 			t.cmdStartSession(update.Message)
+		case "session_reset":
+			t.cmdSessionReset(update.Message)
 		case "add":
 			t.cmdAdd(update.Message)
 		case "remove":
