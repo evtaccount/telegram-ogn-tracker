@@ -16,6 +16,10 @@ RUN go build -o bot ./cmd/bot
 
 FROM alpine:latest
 
+# pass build version to the final image
+ARG APP_VERSION="dev"
+LABEL org.opencontainers.image.version=$APP_VERSION
+
 RUN apk --no-cache add ca-certificates
 
 WORKDIR /root/
