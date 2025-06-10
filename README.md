@@ -29,7 +29,7 @@ The set of available commands depends on the current session state:
 
 1. Before you run `/start` only `/start` and `/help` are available.
 2. After `/start` you can also use `/start_session` and `/status`.
-3. Running `/start_session` unlocks the full command set: `/add`, `/remove`, `/track_on`, `/list`, and `/status`. When tracking is active, `/track_on` is replaced by `/track_off`.
+3. Running `/start_session` unlocks the full command set: `/add`, `/remove`, `/track_on`, `/list`, `/status`, and `/session_reset`. When tracking is active, `/track_on` is replaced by `/track_off`.
 4. Calling `/start_session` again clears all added addresses and restarts the session.
 
 Commands inside Telegram:
@@ -40,6 +40,7 @@ Commands inside Telegram:
 - `/landing` – set the default landing location. After sending the command, send a Telegram location within two minutes.
 - `/track_on` – enable tracking (replaced by `/track_off` once active).
 - `/track_off` – disable tracking and keep addresses.
+- `/session_reset` – stop tracking and clear all addresses.
 - `/list` – show current tracked ids and state (with the Telegram name of the user who added each).
 - `/status` – show current state.
 - `/help` – show the list of available commands.

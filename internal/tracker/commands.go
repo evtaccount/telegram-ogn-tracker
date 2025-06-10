@@ -47,6 +47,22 @@ func (t *Tracker) cmdStartSession(m *tgbotapi.Message) {
 	}
 }
 
+func (t *Tracker) cmdSessionReset(m *tgbotapi.Message) {
+	t.mu.Lock()
+	if t.trackingOn {
+		t.trackingOn = false
+		t.aprs.Disconnect()
+	}
+	t.tracking = make(map[string]*TrackInfo)
+	t.updateFilter()
+	t.chatID = m.Chat.ID
+	t.mu.Unlock()
+
+	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Session reset")); err != nil {
+		log.Printf("failed to send session_reset message: %v", err)
+	}
+}
+
 func (t *Tracker) cmdAdd(m *tgbotapi.Message) {
 	args := strings.Fields(m.CommandArguments())
 	if len(args) == 0 {
@@ -208,6 +224,7 @@ func (t *Tracker) cmdHelp(m *tgbotapi.Message) {
 		"/landing - set default landing location",
 		"/track_on - enable tracking",
 		"/track_off - disable tracking",
+		"/session_reset - stop tracking and clear all addresses",
 		"/list - show current tracked ids and state",
 		"/status - show current state",
 		"/help - show this help",
