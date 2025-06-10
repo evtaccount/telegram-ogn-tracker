@@ -1,4 +1,4 @@
-package main
+package tracker
 
 import (
 	"fmt"
@@ -10,47 +10,47 @@ import (
 )
 
 func (t *Tracker) runClient() {
-        log.Println("OGN client started")
-        for {
-                t.mu.Lock()
-                if !t.trackingOn {
-                        t.mu.Unlock()
-                        break
-                }
-                t.mu.Unlock()
+	log.Println("OGN client started")
+	for {
+		t.mu.Lock()
+		if !t.trackingOn {
+			t.mu.Unlock()
+			break
+		}
+		t.mu.Unlock()
 
-                err := t.aprs.Run(func(line string) {
-                        log.Printf("raw OGN line: %s", line)
-                        msg, err := parser.Parse(line)
-                        if err != nil {
-                                log.Printf("failed to parse line: %v", err)
-                                return
-                        }
-                        origID := msg.Callsign
-                        id := shortID(origID)
-                        t.mu.Lock()
-                        if info, ok := t.tracking[id]; ok {
-                                info.Position = msg
-                                info.LastUpdate = time.Now()
-                                t.tracking[id] = info
-                                log.Printf("received beacon for %s (orig %s): lat %.5f lon %.5f", id, origID, msg.Latitude, msg.Longitude)
-                        } else {
-                                log.Printf("ignoring untracked id %s", origID)
-                        }
-                        t.mu.Unlock()
-                }, false)
-                if err != nil {
-                        t.mu.Lock()
-                        active := t.trackingOn
-                        t.mu.Unlock()
-                        if active {
-                                log.Printf("OGN client error: %v", err)
-                                time.Sleep(5 * time.Second)
-                                continue
-                        }
-                }
-        }
-        log.Println("OGN client stopped")
+		err := t.aprs.Run(func(line string) {
+			log.Printf("raw OGN line: %s", line)
+			msg, err := parser.Parse(line)
+			if err != nil {
+				log.Printf("failed to parse line: %v", err)
+				return
+			}
+			origID := msg.Callsign
+			id := shortID(origID)
+			t.mu.Lock()
+			if info, ok := t.tracking[id]; ok {
+				info.Position = msg
+				info.LastUpdate = time.Now()
+				t.tracking[id] = info
+				log.Printf("received beacon for %s (orig %s): lat %.5f lon %.5f", id, origID, msg.Latitude, msg.Longitude)
+			} else {
+				log.Printf("ignoring untracked id %s", origID)
+			}
+			t.mu.Unlock()
+		}, false)
+		if err != nil {
+			t.mu.Lock()
+			active := t.trackingOn
+			t.mu.Unlock()
+			if active {
+				log.Printf("OGN client error: %v", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+		}
+	}
+	log.Println("OGN client stopped")
 }
 
 func (t *Tracker) sendUpdates() {

@@ -5,6 +5,8 @@ import (
 	"os"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"telegram-ogn-tracker/internal/tracker"
 )
 
 func main() {
@@ -18,6 +20,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	tracker := NewTracker(bot)
-	tracker.Run()
+	t := tracker.NewTracker(bot)
+	t.Run()
 }

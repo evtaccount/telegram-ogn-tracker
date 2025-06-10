@@ -1,5 +1,5 @@
 # Telegram OGN Tracker
-This repository contains a Go implementation (`main.go`) of a Telegram bot that tracks glider positions from the [Open Glider Network](https://www.glidernet.org/). It uses the [go-ogn-client](https://github.com/evtaccount/ogn-client) library for receiving beacons.
+This repository contains a Go implementation (`cmd/bot/main.go`) of a Telegram bot that tracks glider positions from the [Open Glider Network](https://www.glidernet.org/). It uses the [go-ogn-client](https://github.com/evtaccount/ogn-client) library for receiving beacons.
 
 ## Usage
 
@@ -11,7 +11,7 @@ This repository contains a Go implementation (`main.go`) of a Telegram bot that 
    ```sh
    make run
    ```
-   This starts `go run .`.
+   This starts `go run ./cmd/bot`.
 3. To build a standalone binary:
     ```sh
     make build-go
