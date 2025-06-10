@@ -62,10 +62,14 @@ func shortID(id string) string {
 // filter takes effect.
 func (t *Tracker) updateFilter() {
 	ids := make([]string, 0, len(t.tracking))
+	filterable := true
 	for id := range t.tracking {
 		ids = append(ids, id)
+		if len(id) <= 6 {
+			filterable = false
+		}
 	}
-	if len(ids) > 0 {
+	if len(ids) > 0 && filterable {
 		t.aprs.Filter = "b/" + strings.Join(ids, "/")
 	} else {
 		t.aprs.Filter = ""

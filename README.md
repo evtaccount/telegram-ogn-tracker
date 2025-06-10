@@ -48,6 +48,8 @@ Commands inside Telegram:
 Tracking compares only the last six characters of each callsign. This means you
 can add IDs in their short form (e.g. `FE0E4A`) and they will match beacons with
 longer prefixes like `ICA3FE0E4A`.
+When any ID is added in this short form, APRS server filtering is disabled so
+that beacons with longer prefixes still reach the bot.
 
 When tracking IDs, the bot sends a separate live location message for every
 address. By default the message shows your Telegram username. If you provide a
