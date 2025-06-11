@@ -82,10 +82,10 @@ func (t *Tracker) sendUpdates() {
 				if info.Name != "" {
 					text += info.Name
 					if info.Username != "" {
-						text += " (@" + info.Username + ")"
+						text += " (" + info.Username + ")"
 					}
 				} else {
-					text += "@" + info.Username
+					text += info.Username
 				}
 			}
 			if !info.LastUpdate.IsZero() {
