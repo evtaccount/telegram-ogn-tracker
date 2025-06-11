@@ -128,16 +128,22 @@ func (t *Tracker) sendUpdates() {
 				addr = "@" + info.Username
 			}
 
-			venue := tgbotapi.NewVenue(chatID, title, addr, info.Position.Latitude, info.Position.Longitude)
-			msg, err := t.bot.Send(venue)
-			if err != nil {
-				log.Printf("failed to send venue for %s: %v", id, err)
-				continue
-			}
-			textMsg, err := t.bot.Send(tgbotapi.NewMessage(chatID, text))
-			if err != nil {
-				log.Printf("failed to send address message for %s: %v", id, err)
-			}
+                       venue := tgbotapi.NewVenue(chatID, title, addr, info.Position.Latitude, info.Position.Longitude)
+                       msg, err := t.bot.Send(venue)
+                       if err != nil {
+                               log.Printf("failed to send venue for %s: %v", id, err)
+                               loc := tgbotapi.NewLocation(chatID, info.Position.Latitude, info.Position.Longitude)
+                               loc.LivePeriod = 86400
+                               msg, err = t.bot.Send(loc)
+                               if err != nil {
+                                       log.Printf("failed to send fallback location for %s: %v", id, err)
+                                       continue
+                               }
+                       }
+                       textMsg, err := t.bot.Send(tgbotapi.NewMessage(chatID, text))
+                       if err != nil {
+                               log.Printf("failed to send address message for %s: %v", id, err)
+                       }
 			t.mu.Lock()
 			if info, ok := t.tracking[id]; ok {
 				info.MessageID = msg.MessageID
