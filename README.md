@@ -51,13 +51,12 @@ longer prefixes like `ICA3FE0E4A`.
 When any ID is added in this short form, APRS server filtering is disabled so
 that beacons with longer prefixes still reach the bot.
 
-When tracking IDs, the bot sends a separate live location message for every
-address. By default the message shows your Telegram username. If you provide a
-name with `/add`, that name (even with spaces) is shown before your username in
-parentheses.
-The text message below each location also shows when that glider was last seen
-on the network. Each message is updated independently when a new beacon is
-received for that address.
+When tracking IDs, the bot sends a venue message for each address. The venue
+title displays the name provided with `/add` followed by the Telegram username
+in parentheses. Each time a beacon is received, the previous venue message is
+deleted and a new one is sent so the information stays up to date. The text
+message below each location still shows when that glider was last seen on the
+network and is updated independently for every address.
 
 The bot prints debug logs for every received OGN line and any parse errors to help diagnose missing data.
 
