@@ -99,47 +99,59 @@ func (t *Tracker) sendUpdates() {
 			msgID := info.MessageID
 			textID := info.TextID
 
+			// Remove previous messages to avoid duplicates.
 			if msgID != 0 {
-				edit := tgbotapi.EditMessageLiveLocationConfig{
-					BaseEdit: tgbotapi.BaseEdit{
-						ChatID:    chatID,
-						MessageID: msgID,
-					},
-					Latitude:  info.Position.Latitude,
-					Longitude: info.Position.Longitude,
-				}
-				if _, err := t.bot.Request(edit); err != nil {
-					log.Printf("failed to edit location for %s: %v", id, err)
-				} else {
-					log.Printf("updated location for %s", id)
+				del := tgbotapi.NewDeleteMessage(chatID, msgID)
+				if _, err := t.bot.Request(del); err != nil {
+					log.Printf("failed to delete old location for %s: %v", id, err)
 				}
 				if textID != 0 {
-					editText := tgbotapi.NewEditMessageText(chatID, textID, text)
-					if _, err := t.bot.Send(editText); err != nil {
-						log.Printf("failed to edit text for %s: %v", id, err)
+					delTxt := tgbotapi.NewDeleteMessage(chatID, textID)
+					if _, err := t.bot.Request(delTxt); err != nil {
+						log.Printf("failed to delete old text for %s: %v", id, err)
 					}
 				}
-			} else {
-				loc := tgbotapi.NewLocation(chatID, info.Position.Latitude, info.Position.Longitude)
-				loc.LivePeriod = 86400
-				msg, err := t.bot.Send(loc)
-				if err != nil {
-					log.Printf("failed to send location for %s: %v", id, err)
-					continue
-				}
-				textMsg, err := t.bot.Send(tgbotapi.NewMessage(chatID, text))
-				if err != nil {
-					log.Printf("failed to send address message for %s: %v", id, err)
-				}
-				t.mu.Lock()
-				if info, ok := t.tracking[id]; ok {
-					info.MessageID = msg.MessageID
-					info.TextID = textMsg.MessageID
-					t.tracking[id] = info
-				}
-				t.mu.Unlock()
-				log.Printf("sent location for %s", id)
 			}
+
+			title := id
+			if info.Name != "" {
+				title = info.Name
+				if info.Username != "" {
+					title += " (@" + info.Username + ")"
+				}
+			} else if info.Username != "" {
+				title = "@" + info.Username
+			}
+
+			addr := id
+			if info.Username != "" {
+				addr = "@" + info.Username
+			}
+
+                       venue := tgbotapi.NewVenue(chatID, title, addr, info.Position.Latitude, info.Position.Longitude)
+                       msg, err := t.bot.Send(venue)
+                       if err != nil {
+                               log.Printf("failed to send venue for %s: %v", id, err)
+                               loc := tgbotapi.NewLocation(chatID, info.Position.Latitude, info.Position.Longitude)
+                               loc.LivePeriod = 86400
+                               msg, err = t.bot.Send(loc)
+                               if err != nil {
+                                       log.Printf("failed to send fallback location for %s: %v", id, err)
+                                       continue
+                               }
+                       }
+                       textMsg, err := t.bot.Send(tgbotapi.NewMessage(chatID, text))
+                       if err != nil {
+                               log.Printf("failed to send address message for %s: %v", id, err)
+                       }
+			t.mu.Lock()
+			if info, ok := t.tracking[id]; ok {
+				info.MessageID = msg.MessageID
+				info.TextID = textMsg.MessageID
+				t.tracking[id] = info
+			}
+			t.mu.Unlock()
+			log.Printf("sent venue for %s", id)
 		}
 	}
 }
