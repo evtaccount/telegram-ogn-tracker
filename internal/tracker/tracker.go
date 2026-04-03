@@ -1,12 +1,14 @@
 package tracker
 
 import (
+	"context"
 	"math"
 	"strings"
 	"sync"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 	"ogn/client"
 	"ogn/parser"
 )
@@ -37,7 +39,7 @@ func distanceKm(lat1, lon1, lat2, lon2 float64) float64 {
 }
 
 type Tracker struct {
-	bot            *tgbotapi.BotAPI
+	bot            *bot.Bot
 	aprs           *client.Client
 	tracking       map[string]*TrackInfo
 	mu             sync.Mutex
@@ -94,74 +96,49 @@ func (t *Tracker) stopTracking() {
 	t.aprs.Disconnect()
 }
 
-func NewTracker(bot *tgbotapi.BotAPI) *Tracker {
+func NewTracker() *Tracker {
 	return &Tracker{
-		bot:            bot,
-		aprs:           client.New("N0CALL", ""),
-		tracking:       make(map[string]*TrackInfo),
-		trackingOn:     false,
-		sessionActive:  false,
-		landing:        nil,
-		waitingLanding: false,
-		landingExpiry:  time.Time{},
+		aprs:     client.New("N0CALL", ""),
+		tracking: make(map[string]*TrackInfo),
 	}
 }
 
-func (t *Tracker) Run() {
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
+// RegisterHandlers registers all Telegram command handlers on the bot.
+func (t *Tracker) RegisterHandlers(b *bot.Bot) {
+	t.bot = b
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/start_session", bot.MatchTypeCommand, t.cmdStartSession)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/session_reset", bot.MatchTypeCommand, t.cmdSessionReset)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/add", bot.MatchTypeCommand, t.cmdAdd)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/remove", bot.MatchTypeCommand, t.cmdRemove)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/track_on", bot.MatchTypeCommand, t.cmdTrackOn)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/track_off", bot.MatchTypeCommand, t.cmdTrackOff)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/list", bot.MatchTypeCommand, t.cmdList)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/status", bot.MatchTypeCommand, t.cmdStatus)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/landing", bot.MatchTypeCommand, t.cmdLanding)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/help", bot.MatchTypeCommand, t.cmdHelp)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypeCommand, t.cmdStart)
+}
 
-	updates := t.bot.GetUpdatesChan(u)
-
-	for update := range updates {
-		if update.Message == nil {
-			continue
-		}
-
-		if update.Message.From == nil {
-			continue
-		}
-
-		if !t.isTrusted(update.Message.From.ID) {
-			continue
-		}
-
-		cmd := update.Message.Command()
-		if cmd != "" {
-			t.mu.Lock()
-			if cmd != "landing" {
-				t.waitingLanding = false
-			}
-			t.mu.Unlock()
-		}
-
-		switch cmd {
-		case "start":
-			t.cmdStart(update.Message)
-		case "start_session":
-			t.cmdStartSession(update.Message)
-		case "session_reset":
-			t.cmdSessionReset(update.Message)
-		case "add":
-			t.cmdAdd(update.Message)
-		case "remove":
-			t.cmdRemove(update.Message)
-		case "track_on":
-			t.cmdTrackOn(update.Message)
-		case "track_off":
-			t.cmdTrackOff(update.Message)
-		case "list":
-			t.cmdList(update.Message)
-		case "status":
-			t.cmdStatus(update.Message)
-		case "landing":
-			t.cmdLanding(update.Message)
-		case "help":
-			t.cmdHelp(update.Message)
-		}
-
-		if update.Message.Location != nil {
-			t.handleLandingLocation(update.Message)
-		}
+// DefaultHandler handles updates not matched by registered handlers (e.g. location messages).
+func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
+	if update.Message == nil {
+		return
 	}
+	if update.Message.From == nil {
+		return
+	}
+	if !t.isTrusted(update.Message.From.ID) {
+		return
+	}
+	if update.Message.Location != nil {
+		t.handleLandingLocation(ctx, b, update.Message)
+	}
+}
+
+// commandArgs extracts the arguments after a /command from the message text.
+func commandArgs(text string) string {
+	if i := strings.Index(text, " "); i != -1 {
+		return strings.TrimSpace(text[i+1:])
+	}
+	return ""
 }

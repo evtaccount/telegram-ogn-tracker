@@ -1,4 +1,4 @@
 github.com/evtaccount/ogn-client v0.0.0-20260403175026-28a204821426 h1:JCJI9g+7+562wBeCo6fTckuXzhJ3t0pOKB/xMyVuAUs=
 github.com/evtaccount/ogn-client v0.0.0-20260403175026-28a204821426/go.mod h1:cZ7BvyTQgnZ79YsAOMu+lLFxokUazVLVCypQZr3XUww=
-github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1 h1:wG8n/XJQ07TmjbITcGiUaOtXxdrINDz1b0J1w0SzqDc=
-github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1/go.mod h1:A2S0CWkNylc2phvKXWBBdD3K0iGnDBGbzRpISP2zBl8=
+github.com/go-telegram/bot v1.20.0 h1:4Pea/qTidSspr4WBJw9FbHUMNhYeqszBqQUfsQEyFbc=
+github.com/go-telegram/bot v1.20.0/go.mod h1:i2TRs7fXWIeaceF3z7KzsMt/he0TwkVC680mvdTFYeM=

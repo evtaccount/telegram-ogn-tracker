@@ -1,11 +1,12 @@
 package tracker
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/go-telegram/bot"
 	"ogn/parser"
 )
 
@@ -61,15 +62,23 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			return
 		case <-ticker.C:
 		}
+
 		t.mu.Lock()
 		chatID := t.chatID
 		landing := t.landing
+		b := t.bot
 		local := make(map[string]*TrackInfo)
 		for id, info := range t.tracking {
 			cp := *info
 			local[id] = &cp
 		}
 		t.mu.Unlock()
+
+		if b == nil {
+			continue
+		}
+
+		ctx := context.Background()
 
 		for id, info := range local {
 			if info.Position == nil {
@@ -100,41 +109,49 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			textID := info.TextID
 
 			if msgID != 0 {
-				edit := tgbotapi.EditMessageLiveLocationConfig{
-					BaseEdit: tgbotapi.BaseEdit{
-						ChatID:    chatID,
-						MessageID: msgID,
-					},
+				if _, err := b.EditMessageLiveLocation(ctx, &bot.EditMessageLiveLocationParams{
+					ChatID:    chatID,
+					MessageID: msgID,
 					Latitude:  info.Position.Latitude,
 					Longitude: info.Position.Longitude,
-				}
-				if _, err := t.bot.Request(edit); err != nil {
+				}); err != nil {
 					log.Printf("failed to edit location for %s: %v", id, err)
 				} else {
 					log.Printf("updated location for %s", id)
 				}
 				if textID != 0 {
-					editText := tgbotapi.NewEditMessageText(chatID, textID, text)
-					if _, err := t.bot.Send(editText); err != nil {
+					if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+						ChatID:    chatID,
+						MessageID: textID,
+						Text:      text,
+					}); err != nil {
 						log.Printf("failed to edit text for %s: %v", id, err)
 					}
 				}
 			} else {
-				loc := tgbotapi.NewLocation(chatID, info.Position.Latitude, info.Position.Longitude)
-				loc.LivePeriod = 86400
-				msg, err := t.bot.Send(loc)
+				locMsg, err := b.SendLocation(ctx, &bot.SendLocationParams{
+					ChatID:     chatID,
+					Latitude:   info.Position.Latitude,
+					Longitude:  info.Position.Longitude,
+					LivePeriod: 86400,
+				})
 				if err != nil {
 					log.Printf("failed to send location for %s: %v", id, err)
 					continue
 				}
-				textMsg, err := t.bot.Send(tgbotapi.NewMessage(chatID, text))
+				textMsg, err := b.SendMessage(ctx, &bot.SendMessageParams{
+					ChatID: chatID,
+					Text:   text,
+				})
 				if err != nil {
 					log.Printf("failed to send address message for %s: %v", id, err)
 				}
 				t.mu.Lock()
 				if info, ok := t.tracking[id]; ok {
-					info.MessageID = msg.MessageID
-					info.TextID = textMsg.MessageID
+					info.MessageID = locMsg.ID
+					if textMsg != nil {
+						info.TextID = textMsg.ID
+					}
 					t.tracking[id] = info
 				}
 				t.mu.Unlock()
