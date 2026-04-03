@@ -38,7 +38,6 @@ func (s PilotStatus) Emoji() string {
 
 type TrackInfo struct {
 	MessageID     int
-	TextID        int
 	Position      *parser.PositionMessage
 	Name          string
 	Username      string
@@ -73,6 +72,7 @@ type Tracker struct {
 	waitingLanding bool
 	landingExpiry  time.Time
 	devices        map[string]ddb.Device
+	summaryMsgID   int
 }
 
 var aircraftTypes = map[int]string{
@@ -140,6 +140,7 @@ func (t *Tracker) stopTracking() {
 		return
 	}
 	t.trackingOn = false
+	t.summaryMsgID = 0
 	if t.stopCh != nil {
 		close(t.stopCh)
 		t.stopCh = nil

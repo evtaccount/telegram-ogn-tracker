@@ -45,6 +45,7 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	t.sessionActive = true
 	t.landing = nil
 	t.waitingLanding = false
+	t.summaryMsgID = 0
 	t.mu.Unlock()
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -308,6 +309,7 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 	t.updateFilter()
 	t.landing = nil
 	t.waitingLanding = false
+	t.summaryMsgID = 0
 	t.chatID = chatID
 	t.mu.Unlock()
 

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-telegram/bot"
@@ -184,6 +186,80 @@ func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinat
 	return text
 }
 
+func (t *Tracker) buildSummary(local map[string]*TrackInfo, landing *Coordinates) string {
+	type entry struct {
+		id   string
+		info *TrackInfo
+	}
+
+	var flying, landed, pickedUp, waiting []entry
+	for id, info := range local {
+		e := entry{id, info}
+		if info.Position == nil {
+			waiting = append(waiting, e)
+		} else {
+			switch info.Status {
+			case StatusFlying:
+				flying = append(flying, e)
+			case StatusLanded:
+				landed = append(landed, e)
+			case StatusPickedUp:
+				pickedUp = append(pickedUp, e)
+			}
+		}
+	}
+
+	sortByID := func(entries []entry) {
+		sort.Slice(entries, func(i, j int) bool { return entries[i].id < entries[j].id })
+	}
+	sortByID(flying)
+	sortByID(landed)
+	sortByID(pickedUp)
+	sortByID(waiting)
+
+	// Header with counts.
+	total := len(local)
+	header := fmt.Sprintf("📊 %d pilot(s)", total)
+	var counts []string
+	if len(flying) > 0 {
+		counts = append(counts, fmt.Sprintf("%d flying", len(flying)))
+	}
+	if len(landed) > 0 {
+		counts = append(counts, fmt.Sprintf("%d landed", len(landed)))
+	}
+	if len(pickedUp) > 0 {
+		counts = append(counts, fmt.Sprintf("%d picked up", len(pickedUp)))
+	}
+	if len(counts) > 0 {
+		header += " — " + strings.Join(counts, ", ")
+	}
+
+	// Build per-pilot sections.
+	var sections []string
+	for _, e := range flying {
+		sections = append(sections, t.formatTrackText(e.id, e.info, landing))
+	}
+	for _, e := range landed {
+		sections = append(sections, t.formatTrackText(e.id, e.info, landing))
+	}
+	for _, e := range pickedUp {
+		label := "✅ " + e.id
+		if name := e.info.DisplayName(); name != "" {
+			label += " — " + name
+		}
+		sections = append(sections, label)
+	}
+	for _, e := range waiting {
+		label := "⏳ " + e.id
+		if name := e.info.DisplayName(); name != "" {
+			label += " — " + name
+		}
+		sections = append(sections, label)
+	}
+
+	return header + "\n\n" + strings.Join(sections, "\n\n")
+}
+
 func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -198,6 +274,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		chatID := t.chatID
 		landing := t.landing
 		b := t.bot
+		summaryMsgID := t.summaryMsgID
 		local := make(map[string]*TrackInfo)
 		for id, info := range t.tracking {
 			cp := *info
@@ -205,32 +282,27 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		}
 		t.mu.Unlock()
 
-		if b == nil {
+		if b == nil || len(local) == 0 {
 			continue
 		}
 
 		ctx := context.Background()
 
+		// Update per-pilot live locations on the map.
 		for id, info := range local {
 			if info.Position == nil || info.Status == StatusPickedUp {
 				continue
 			}
 
-			text := t.formatTrackText(id, info, landing)
-
-			// Heading for Telegram live location (1-360).
 			heading := info.Position.Course
 			if heading == 0 && info.Position.GroundSpeed > 0 {
 				heading = 360
 			}
 
-			msgID := info.MessageID
-			textID := info.TextID
-
-			if msgID != 0 {
+			if info.MessageID != 0 {
 				editParams := &bot.EditMessageLiveLocationParams{
 					ChatID:    chatID,
-					MessageID: msgID,
+					MessageID: info.MessageID,
 					Latitude:  info.Position.Latitude,
 					Longitude: info.Position.Longitude,
 				}
@@ -239,15 +311,6 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 				}
 				if _, err := b.EditMessageLiveLocation(ctx, editParams); err != nil {
 					log.Printf("failed to edit location for %s: %v", id, err)
-				}
-				if textID != 0 {
-					if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
-						ChatID:    chatID,
-						MessageID: textID,
-						Text:      text,
-					}); err != nil {
-						log.Printf("failed to edit text for %s: %v", id, err)
-					}
 				}
 			} else {
 				sendParams := &bot.SendLocationParams{
@@ -264,22 +327,36 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 					log.Printf("failed to send location for %s: %v", id, err)
 					continue
 				}
-				textMsg, err := b.SendMessage(ctx, &bot.SendMessageParams{
-					ChatID: chatID,
-					Text:   text,
-				})
-				if err != nil {
-					log.Printf("failed to send text for %s: %v", id, err)
-				}
 				t.mu.Lock()
 				if ti, ok := t.tracking[id]; ok {
 					ti.MessageID = locMsg.ID
-					if textMsg != nil {
-						ti.TextID = textMsg.ID
-					}
 				}
 				t.mu.Unlock()
 				log.Printf("sent location for %s", id)
+			}
+		}
+
+		// Send or update the single summary message.
+		summary := t.buildSummary(local, landing)
+		if summaryMsgID != 0 {
+			if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+				ChatID:    chatID,
+				MessageID: summaryMsgID,
+				Text:      summary,
+			}); err != nil {
+				log.Printf("failed to edit summary: %v", err)
+			}
+		} else {
+			msg, err := b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: chatID,
+				Text:   summary,
+			})
+			if err != nil {
+				log.Printf("failed to send summary: %v", err)
+			} else {
+				t.mu.Lock()
+				t.summaryMsgID = msg.ID
+				t.mu.Unlock()
 			}
 		}
 	}
