@@ -10,6 +10,8 @@ import (
 	"ogn/parser"
 )
 
+const staleThreshold = 5 * time.Minute
+
 func (t *Tracker) runClient(stopCh <-chan struct{}) {
 	log.Println("OGN client started")
 	for {
@@ -21,10 +23,8 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 		}
 
 		err := t.aprs.Run(func(line string) {
-			log.Printf("raw OGN line: %s", line)
 			msg, err := parser.ParsePosition(line)
 			if err != nil {
-				log.Printf("failed to parse line: %v", err)
 				return
 			}
 			origID := msg.Callsign
@@ -33,10 +33,7 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 			if info, ok := t.tracking[id]; ok {
 				info.Position = msg
 				info.LastUpdate = time.Now()
-				t.tracking[id] = info
-				log.Printf("received beacon for %s (orig %s): lat %.5f lon %.5f", id, origID, msg.Latitude, msg.Longitude)
-			} else {
-				log.Printf("ignoring untracked id %s", origID)
+				log.Printf("beacon %s: %.5f,%.5f %.0fm %.0fkm/h", id, msg.Latitude, msg.Longitude, msg.Altitude, msg.GroundSpeed)
 			}
 			t.mu.Unlock()
 		}, false)
@@ -51,6 +48,51 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 			}
 		}
 	}
+}
+
+func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinates) string {
+	pos := info.Position
+
+	// Header: ID and name.
+	text := id
+	if info.Name != "" {
+		text += " — " + info.Name
+	} else if info.Username != "" {
+		text += " — " + info.Username
+	}
+
+	// Stale data warning.
+	if !info.LastUpdate.IsZero() && time.Since(info.LastUpdate) > staleThreshold {
+		mins := int(time.Since(info.LastUpdate).Minutes())
+		text += fmt.Sprintf("\n⚠️ No data for %d min", mins)
+		text += "\n⏱ " + info.LastUpdate.Format("15:04:05")
+		return text
+	}
+
+	// Flight data line.
+	text += fmt.Sprintf("\n⬆️ %.0fm", pos.Altitude)
+	if pos.ClimbRate != 0 {
+		text += fmt.Sprintf("  %+.1fm/s", pos.ClimbRate)
+	}
+	if pos.GroundSpeed > 0 {
+		text += fmt.Sprintf("  %.0fkm/h", pos.GroundSpeed)
+	}
+	if pos.Course > 0 || pos.GroundSpeed > 0 {
+		text += "  " + formatBearing(float64(pos.Course))
+	}
+
+	// Distance and bearing to landing.
+	if landing != nil {
+		distKm, bearing := distanceAndBearing(pos.Latitude, pos.Longitude, landing.Latitude, landing.Longitude)
+		text += fmt.Sprintf("\n📍 %.1fkm to landing (%s)", distKm, formatBearing(bearing))
+	}
+
+	// Last update time.
+	if !info.LastUpdate.IsZero() {
+		text += "\n⏱ " + info.LastUpdate.Format("15:04:05")
+	}
+
+	return text
 }
 
 func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
@@ -85,39 +127,29 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 				continue
 			}
 
-			text := "Address: " + id
-			if info.Name != "" || info.Username != "" {
-				text += "\n"
-				if info.Name != "" {
-					text += info.Name
-					if info.Username != "" {
-						text += " (" + info.Username + ")"
-					}
-				} else {
-					text += info.Username
-				}
-			}
-			if !info.LastUpdate.IsZero() {
-				text += "\nLast update: " + info.LastUpdate.Format("2006-01-02 15:04:05")
-			}
-			if landing != nil {
-				dist := distanceKm(info.Position.Latitude, info.Position.Longitude, landing.Latitude, landing.Longitude)
-				text += fmt.Sprintf("\nDistance to landing: %.1f km", dist)
+			text := t.formatTrackText(id, info, landing)
+
+			// Heading for Telegram live location (1-360).
+			heading := info.Position.Course
+			if heading == 0 && info.Position.GroundSpeed > 0 {
+				heading = 360
 			}
 
 			msgID := info.MessageID
 			textID := info.TextID
 
 			if msgID != 0 {
-				if _, err := b.EditMessageLiveLocation(ctx, &bot.EditMessageLiveLocationParams{
+				editParams := &bot.EditMessageLiveLocationParams{
 					ChatID:    chatID,
 					MessageID: msgID,
 					Latitude:  info.Position.Latitude,
 					Longitude: info.Position.Longitude,
-				}); err != nil {
+				}
+				if heading > 0 {
+					editParams.Heading = heading
+				}
+				if _, err := b.EditMessageLiveLocation(ctx, editParams); err != nil {
 					log.Printf("failed to edit location for %s: %v", id, err)
-				} else {
-					log.Printf("updated location for %s", id)
 				}
 				if textID != 0 {
 					if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
@@ -129,12 +161,16 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 					}
 				}
 			} else {
-				locMsg, err := b.SendLocation(ctx, &bot.SendLocationParams{
+				sendParams := &bot.SendLocationParams{
 					ChatID:     chatID,
 					Latitude:   info.Position.Latitude,
 					Longitude:  info.Position.Longitude,
 					LivePeriod: 86400,
-				})
+				}
+				if heading > 0 {
+					sendParams.Heading = heading
+				}
+				locMsg, err := b.SendLocation(ctx, sendParams)
 				if err != nil {
 					log.Printf("failed to send location for %s: %v", id, err)
 					continue
@@ -144,15 +180,14 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 					Text:   text,
 				})
 				if err != nil {
-					log.Printf("failed to send address message for %s: %v", id, err)
+					log.Printf("failed to send text for %s: %v", id, err)
 				}
 				t.mu.Lock()
-				if info, ok := t.tracking[id]; ok {
-					info.MessageID = locMsg.ID
+				if ti, ok := t.tracking[id]; ok {
+					ti.MessageID = locMsg.ID
 					if textMsg != nil {
-						info.TextID = textMsg.ID
+						ti.TextID = textMsg.ID
 					}
-					t.tracking[id] = info
 				}
 				t.mu.Unlock()
 				log.Printf("sent location for %s", id)

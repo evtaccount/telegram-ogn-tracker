@@ -2,6 +2,8 @@ package tracker
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"math"
 	"strings"
 	"sync"
@@ -10,6 +12,7 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 	"ogn/client"
+	"ogn/ddb"
 	"ogn/parser"
 )
 
@@ -27,17 +30,6 @@ type Coordinates struct {
 	Longitude float64
 }
 
-func distanceKm(lat1, lon1, lat2, lon2 float64) float64 {
-	const r = 6371.0 // Earth radius in kilometers
-	dLat := (lat2 - lat1) * math.Pi / 180
-	dLon := (lon2 - lon1) * math.Pi / 180
-	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
-		math.Cos(lat1*math.Pi/180)*math.Cos(lat2*math.Pi/180)*
-			math.Sin(dLon/2)*math.Sin(dLon/2)
-	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
-	return r * c
-}
-
 type Tracker struct {
 	bot            *bot.Bot
 	aprs           *client.Client
@@ -50,6 +42,14 @@ type Tracker struct {
 	landing        *Coordinates
 	waitingLanding bool
 	landingExpiry  time.Time
+	devices        map[string]ddb.Device
+}
+
+var aircraftTypes = map[int]string{
+	0: "Unknown", 1: "Glider", 2: "Tow plane", 3: "Helicopter",
+	4: "Parachute", 5: "Drop plane", 6: "Hang glider", 7: "Paraglider",
+	8: "Powered aircraft", 9: "Jet", 10: "UFO", 11: "Balloon",
+	12: "Airship", 13: "Drone", 15: "Static object",
 }
 
 func shortID(id string) string {
@@ -60,9 +60,26 @@ func shortID(id string) string {
 	return id[len(id)-6:]
 }
 
+func distanceAndBearing(lat1, lon1, lat2, lon2 float64) (distKm float64, bearing float64) {
+	ruler := parser.NewCheapRuler((lat1 + lat2) / 2)
+	a := [2]float64{lon1, lat1}
+	b := [2]float64{lon2, lat2}
+	return ruler.Distance(a, b) / 1000, ruler.Bearing(a, b)
+}
+
+func bearingEmoji(deg float64) string {
+	deg = math.Mod(deg+360, 360)
+	arrows := []string{"⬆️", "↗️", "➡️", "↘️", "⬇️", "↙️", "⬅️", "↖️"}
+	idx := int(math.Round(deg/45)) % 8
+	return arrows[idx]
+}
+
+func formatBearing(deg float64) string {
+	deg = math.Mod(deg+360, 360)
+	return fmt.Sprintf("%s %03.0f°", bearingEmoji(deg), deg)
+}
+
 // updateFilter rebuilds the APRS filter based on the currently tracked IDs.
-// When tracking is active, the client connection is restarted so the new
-// filter takes effect.
 func (t *Tracker) updateFilter() {
 	ids := make([]string, 0, len(t.tracking))
 	filterable := true
@@ -73,7 +90,7 @@ func (t *Tracker) updateFilter() {
 		}
 	}
 	if len(ids) > 0 && filterable {
-		t.aprs.Filter = "b/" + strings.Join(ids, "/")
+		t.aprs.Filter = client.BudlistFilter(ids...)
 	} else {
 		t.aprs.Filter = ""
 	}
@@ -96,14 +113,56 @@ func (t *Tracker) stopTracking() {
 	t.aprs.Disconnect()
 }
 
-func NewTracker() *Tracker {
-	return &Tracker{
-		aprs:     client.New("N0CALL", ""),
-		tracking: make(map[string]*TrackInfo),
+func (t *Tracker) loadDevices() {
+	devices, err := ddb.GetDevices()
+	if err != nil {
+		log.Printf("failed to load OGN device database: %v", err)
+		return
+	}
+	m := ddb.LookupByID(devices)
+	t.mu.Lock()
+	t.devices = m
+	t.mu.Unlock()
+	log.Printf("loaded %d devices from OGN database", len(m))
+}
+
+// keyboard returns an inline keyboard based on current tracker state.
+// Must be called with t.mu held.
+func (t *Tracker) keyboard() *models.InlineKeyboardMarkup {
+	if !t.sessionActive || len(t.tracking) == 0 {
+		return nil
+	}
+	if t.trackingOn {
+		return &models.InlineKeyboardMarkup{
+			InlineKeyboard: [][]models.InlineKeyboardButton{
+				{
+					{Text: "⏹ Stop", CallbackData: "track_off"},
+					{Text: "📋 List", CallbackData: "list"},
+					{Text: "📍 Landing", CallbackData: "landing"},
+				},
+			},
+		}
+	}
+	return &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{Text: "▶️ Track", CallbackData: "track_on"},
+				{Text: "📋 List", CallbackData: "list"},
+				{Text: "🔄 Reset", CallbackData: "session_reset"},
+			},
+		},
 	}
 }
 
-// RegisterHandlers registers all Telegram command handlers on the bot.
+func NewTracker() *Tracker {
+	t := &Tracker{
+		aprs:     client.New("N0CALL", ""),
+		tracking: make(map[string]*TrackInfo),
+	}
+	go t.loadDevices()
+	return t
+}
+
 func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	t.bot = b
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/start_session", bot.MatchTypeCommand, t.cmdStartSession)
@@ -117,14 +176,17 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/landing", bot.MatchTypeCommand, t.cmdLanding)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/help", bot.MatchTypeCommand, t.cmdHelp)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypeCommand, t.cmdStart)
+
+	// Inline button callbacks.
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "track_on", bot.MatchTypeExact, t.cbTrackOn)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "track_off", bot.MatchTypeExact, t.cbTrackOff)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "list", bot.MatchTypeExact, t.cbList)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "landing", bot.MatchTypeExact, t.cbLanding)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset", bot.MatchTypeExact, t.cbSessionReset)
 }
 
-// DefaultHandler handles updates not matched by registered handlers (e.g. location messages).
 func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
-	if update.Message == nil {
-		return
-	}
-	if update.Message.From == nil {
+	if update.Message == nil || update.Message.From == nil {
 		return
 	}
 	if !t.isTrusted(update.Message.From.ID) {
@@ -135,7 +197,6 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 	}
 }
 
-// commandArgs extracts the arguments after a /command from the message text.
 func commandArgs(text string) string {
 	if i := strings.Index(text, " "); i != -1 {
 		return strings.TrimSpace(text[i+1:])
