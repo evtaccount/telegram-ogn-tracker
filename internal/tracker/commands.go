@@ -547,7 +547,7 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 		track = "on"
 	}
 
-	// Copy tracking map for landedButtons (still under lock).
+	// Copy tracking map for pilotButtons (still under lock).
 	localCopy := make(map[string]*TrackInfo, len(t.tracking))
 	for id, info := range t.tracking {
 		cp := *info
@@ -557,7 +557,7 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Unlock()
 
 	// Merge general keyboard with nav+pickup buttons for landed pilots.
-	navKb := landedButtons(localCopy)
+	navKb := pilotButtons(localCopy)
 	var replyMarkup models.ReplyMarkup
 	if navKb != nil {
 		merged := *navKb

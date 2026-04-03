@@ -235,24 +235,44 @@ func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinat
 	return text
 }
 
-// landedButtons returns navigate + pickup inline buttons for each landed pilot.
-func landedButtons(local map[string]*TrackInfo) *models.InlineKeyboardMarkup {
+// pilotButtons returns inline buttons for pilots with known positions.
+// Flying pilots get a navigate button; landed pilots get navigate + pickup.
+func pilotButtons(local map[string]*TrackInfo) *models.InlineKeyboardMarkup {
 	type entry struct {
 		id   string
 		info *TrackInfo
 	}
-	var landed []entry
+	var flying, landed []entry
 	for id, info := range local {
-		if info.Status == StatusLanded && info.Position != nil {
+		if info.Position == nil {
+			continue
+		}
+		switch info.Status {
+		case StatusFlying:
+			flying = append(flying, entry{id, info})
+		case StatusLanded:
 			landed = append(landed, entry{id, info})
 		}
 	}
-	if len(landed) == 0 {
+	if len(flying) == 0 && len(landed) == 0 {
 		return nil
 	}
-	sort.Slice(landed, func(i, j int) bool { return landed[i].id < landed[j].id })
+	sortByID := func(entries []entry) {
+		sort.Slice(entries, func(i, j int) bool { return entries[i].id < entries[j].id })
+	}
+	sortByID(flying)
+	sortByID(landed)
 
 	var rows [][]models.InlineKeyboardButton
+	for _, e := range flying {
+		label := e.id
+		if name := e.info.DisplayName(); name != "" {
+			label = name
+		}
+		rows = append(rows, []models.InlineKeyboardButton{
+			{Text: "🗺 " + label, URL: mapsNavURL(e.info.Position.Latitude, e.info.Position.Longitude)},
+		})
+	}
 	for _, e := range landed {
 		label := e.id
 		if name := e.info.DisplayName(); name != "" {
@@ -455,7 +475,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 
 		// Send or update the single summary message.
 		summary := t.buildSummary(local, landing, drivers, areaRadius)
-		kb := landedButtons(local)
+		kb := pilotButtons(local)
 		if summaryMsgID != 0 {
 			if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
 				ChatID:      chatID,
