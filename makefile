@@ -1,7 +1,12 @@
-.PHONY: run vet build-go stop build up down rebuild logs reset cleanup prune-images
+.PHONY: run vet build-go stop build up down rebuild logs reset cleanup prune-images deploy
 
 IMAGE_NAME := telegram-ogn-tracker
 SERVICE := ogn-tracker
+
+# Deploy settings — override via env or command line:
+#   make deploy DEPLOY_HOST=user@server DEPLOY_PATH=/opt/telegram-ogn-tracker
+DEPLOY_HOST ?= user@server
+DEPLOY_PATH ?= /opt/telegram-ogn-tracker
 
 run: vet
 	go run ./cmd/bot
@@ -44,3 +49,6 @@ cleanup:
 	docker rmi $(IMAGE_NAME) $(IMAGE_NAME)-$(SERVICE) || true
 	docker image prune -f
 	docker network rm $(IMAGE_NAME)_default || true
+
+deploy:
+	ssh $(DEPLOY_HOST) "cd $(DEPLOY_PATH) && git pull && make rebuild"

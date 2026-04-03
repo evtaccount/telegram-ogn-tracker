@@ -62,6 +62,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
 
       - uses: docker/build-push-action@v6
         with:
@@ -86,3 +87,21 @@ jobs:
         with:
           generate_release_notes: true
           files: artifacts/*
+
+  deploy:
+    needs: [docker]
+    runs-on: ubuntu-latest
+    # Set required secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PATH
+    if: vars.DEPLOY_ENABLED == 'true'
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            docker pull ghcr.io/${{ github.repository }}:latest
+            docker tag ghcr.io/${{ github.repository }}:latest telegram-ogn-tracker:latest
+            cd ${{ secrets.DEPLOY_PATH }} && docker compose up -d
+            docker image prune -f
