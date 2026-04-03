@@ -186,6 +186,37 @@ func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinat
 	return text
 }
 
+// landedButtons returns navigate + pickup inline buttons for each landed pilot.
+func landedButtons(local map[string]*TrackInfo) *models.InlineKeyboardMarkup {
+	type entry struct {
+		id   string
+		info *TrackInfo
+	}
+	var landed []entry
+	for id, info := range local {
+		if info.Status == StatusLanded && info.Position != nil {
+			landed = append(landed, entry{id, info})
+		}
+	}
+	if len(landed) == 0 {
+		return nil
+	}
+	sort.Slice(landed, func(i, j int) bool { return landed[i].id < landed[j].id })
+
+	var rows [][]models.InlineKeyboardButton
+	for _, e := range landed {
+		label := e.id
+		if name := e.info.DisplayName(); name != "" {
+			label = name
+		}
+		rows = append(rows, []models.InlineKeyboardButton{
+			{Text: "🗺 " + label, URL: mapsNavURL(e.info.Position.Latitude, e.info.Position.Longitude)},
+			{Text: "✅ " + label, CallbackData: "pickup:" + e.id},
+		})
+	}
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
 func (t *Tracker) buildSummary(local map[string]*TrackInfo, landing *Coordinates) string {
 	type entry struct {
 		id   string
@@ -338,18 +369,21 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 
 		// Send or update the single summary message.
 		summary := t.buildSummary(local, landing)
+		kb := landedButtons(local)
 		if summaryMsgID != 0 {
 			if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
-				ChatID:    chatID,
-				MessageID: summaryMsgID,
-				Text:      summary,
+				ChatID:      chatID,
+				MessageID:   summaryMsgID,
+				Text:        summary,
+				ReplyMarkup: kb,
 			}); err != nil {
 				log.Printf("failed to edit summary: %v", err)
 			}
 		} else {
 			msg, err := b.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID: chatID,
-				Text:   summary,
+				ChatID:      chatID,
+				Text:        summary,
+				ReplyMarkup: kb,
 			})
 			if err != nil {
 				log.Printf("failed to send summary: %v", err)

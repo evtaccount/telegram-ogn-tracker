@@ -431,8 +431,28 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 	if t.trackingOn {
 		track = "on"
 	}
+
+	// Copy tracking map for landedButtons (still under lock).
+	localCopy := make(map[string]*TrackInfo, len(t.tracking))
+	for id, info := range t.tracking {
+		cp := *info
+		localCopy[id] = &cp
+	}
 	kb := t.keyboard()
 	t.mu.Unlock()
+
+	// Merge general keyboard with nav+pickup buttons for landed pilots.
+	navKb := landedButtons(localCopy)
+	var replyMarkup models.ReplyMarkup
+	if navKb != nil {
+		merged := *navKb
+		if kb != nil {
+			merged.InlineKeyboard = append(merged.InlineKeyboard, kb.InlineKeyboard...)
+		}
+		replyMarkup = &merged
+	} else {
+		replyMarkup = kb
+	}
 
 	list := strings.Join(entries, "\n")
 	if list == "" {
@@ -442,7 +462,7 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        text,
-		ReplyMarkup: kb,
+		ReplyMarkup: replyMarkup,
 	}); err != nil {
 		log.Printf("failed to send list: %v", err)
 	}
