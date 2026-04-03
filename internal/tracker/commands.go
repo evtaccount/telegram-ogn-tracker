@@ -262,6 +262,54 @@ func (t *Tracker) cmdLanding(ctx context.Context, b *bot.Bot, update *models.Upd
 	t.execLanding(ctx, b, m.Chat.ID)
 }
 
+func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) {
+	m := update.Message
+	if m.From == nil || !t.isTrusted(m.From.ID) {
+		return
+	}
+	if !t.requireSession(ctx, b, m.Chat.ID) {
+		return
+	}
+
+	arg := commandArgs(m.Text)
+	if arg == "" {
+		t.mu.Lock()
+		cur := t.tz().String()
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   fmt.Sprintf("Current timezone: %s\nUsage: /tz Europe/Kyiv", cur),
+		}); err != nil {
+			log.Printf("failed to send tz usage: %v", err)
+		}
+		return
+	}
+
+	loc, err := time.LoadLocation(arg)
+	if err != nil {
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   "Unknown timezone. Use IANA format, e.g. Europe/Kyiv, America/New_York, Asia/Tokyo",
+		}); err != nil {
+			log.Printf("failed to send tz error: %v", err)
+		}
+		return
+	}
+
+	t.mu.Lock()
+	t.timezone = loc
+	t.saveState()
+	t.mu.Unlock()
+
+	now := time.Now().In(loc).Format("15:04:05")
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: m.Chat.ID,
+		Text:   fmt.Sprintf("Timezone set to %s (now: %s)", loc.String(), now),
+	}); err != nil {
+		log.Printf("failed to confirm tz: %v", err)
+	}
+}
+
 func (t *Tracker) cmdHelp(ctx context.Context, b *bot.Bot, update *models.Update) {
 	m := update.Message
 	if m.From == nil || !t.isTrusted(m.From.ID) {
@@ -279,6 +327,7 @@ func (t *Tracker) cmdHelp(ctx context.Context, b *bot.Bot, update *models.Update
 		"/driver_off — stop being the driver",
 		"/area [radius] — track all aircraft in area (default 100km)",
 		"/area_off — disable area tracking",
+		"/tz [zone] — set timezone (e.g. Europe/Kyiv)",
 		"/list — show tracked addresses",
 		"/status — show current state",
 		"/session_reset — stop and clear all",
@@ -529,7 +578,7 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 			entry += " — " + info.Username
 		}
 		if info.Status == StatusLanded && !info.LandingTime.IsZero() {
-			entry += fmt.Sprintf(" (landed %s)", info.LandingTime.Format("15:04"))
+			entry += fmt.Sprintf(" (landed %s)", info.LandingTime.In(t.tz()).Format("15:04"))
 		}
 		if info.Status == StatusPickedUp {
 			entry += " (picked up)"

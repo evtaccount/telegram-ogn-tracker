@@ -29,6 +29,7 @@ type landingEvent struct {
 	lon  float64
 	alt  float64
 	time time.Time
+	tz   *time.Location
 }
 
 func (t *Tracker) runClient(stopCh <-chan struct{}) {
@@ -85,6 +86,7 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 								lon:  msg.Longitude,
 								alt:  msg.Altitude,
 								time: info.LandingTime,
+								tz:   t.tz(),
 							}
 							log.Printf("landing detected for %s at %.5f,%.5f", id, msg.Latitude, msg.Longitude)
 						}
@@ -127,7 +129,7 @@ func (t *Tracker) sendLandingAlert(e *landingEvent, chatID int64) {
 		label = e.name
 	}
 	text := fmt.Sprintf("🪂 %s landed!", label)
-	text += fmt.Sprintf("\n⬆️ %.0fm  ⏱ %s", e.alt, e.time.Format("15:04:05"))
+	text += fmt.Sprintf("\n⬆️ %.0fm  ⏱ %s", e.alt, e.time.In(e.tz).Format("15:04:05"))
 
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -194,14 +196,14 @@ func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinat
 		}
 	}
 	if info.Status == StatusLanded && !info.LandingTime.IsZero() {
-		text += fmt.Sprintf(" (landed %s)", info.LandingTime.Format("15:04"))
+		text += fmt.Sprintf(" (landed %s)", info.LandingTime.In(t.tz()).Format("15:04"))
 	}
 
 	// Stale data warning.
 	if !info.LastUpdate.IsZero() && time.Since(info.LastUpdate) > staleThreshold {
 		mins := int(time.Since(info.LastUpdate).Minutes())
 		text += fmt.Sprintf("\n⚠️ No data for %d min", mins)
-		text += "\n⏱ " + info.LastUpdate.Format("15:04:05")
+		text += "\n⏱ " + info.LastUpdate.In(t.tz()).Format("15:04:05")
 		return text
 	}
 
@@ -232,7 +234,7 @@ func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinat
 
 	// Last update time.
 	if !info.LastUpdate.IsZero() {
-		text += "\n⏱ " + info.LastUpdate.Format("15:04:05")
+		text += "\n⏱ " + info.LastUpdate.In(t.tz()).Format("15:04:05")
 	}
 
 	return text

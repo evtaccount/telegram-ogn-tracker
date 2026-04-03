@@ -19,6 +19,7 @@ type sessionState struct {
 	Landing         *Coordinates       `json:"landing,omitempty"`
 	TrackArea       *Coordinates       `json:"track_area,omitempty"`
 	TrackAreaRadius int                `json:"track_area_radius,omitempty"`
+	Timezone        string             `json:"timezone,omitempty"`
 }
 
 type pilotState struct {
@@ -38,6 +39,9 @@ func (t *Tracker) saveState() {
 		Landing:         t.landing,
 		TrackArea:       t.trackArea,
 		TrackAreaRadius: t.trackAreaRadius,
+	}
+	if t.timezone != nil {
+		state.Timezone = t.timezone.String()
 	}
 	if len(t.tracking) > 0 {
 		state.Tracking = make(map[string]*pilotState, len(t.tracking))
@@ -95,6 +99,11 @@ func (t *Tracker) loadState() bool {
 	t.landing = state.Landing
 	t.trackArea = state.TrackArea
 	t.trackAreaRadius = state.TrackAreaRadius
+	if state.Timezone != "" {
+		if loc, err := time.LoadLocation(state.Timezone); err == nil {
+			t.timezone = loc
+		}
+	}
 
 	if len(state.Tracking) > 0 {
 		for id, ps := range state.Tracking {

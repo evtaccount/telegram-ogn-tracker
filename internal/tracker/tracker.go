@@ -88,6 +88,7 @@ type Tracker struct {
 	waitingArea     bool
 	areaExpiry      time.Time
 	resumeOnStart   bool
+	timezone        *time.Location
 }
 
 var aircraftTypes = map[int]string{
@@ -122,6 +123,15 @@ func bearingEmoji(deg float64) string {
 func formatBearing(deg float64) string {
 	deg = math.Mod(deg+360, 360)
 	return fmt.Sprintf("%s %03.0f°", bearingEmoji(deg), deg)
+}
+
+// formatTime formats a time value using the tracker's timezone.
+// Must be called with t.mu held, or use the returned location outside the lock.
+func (t *Tracker) tz() *time.Location {
+	if t.timezone != nil {
+		return t.timezone
+	}
+	return time.UTC
 }
 
 func mapsNavURL(lat, lon float64) string {
@@ -277,6 +287,7 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/driver_off", bot.MatchTypeCommand, t.cmdDriverOff)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/area", bot.MatchTypeCommand, t.cmdArea)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/area_off", bot.MatchTypeCommand, t.cmdAreaOff)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/tz", bot.MatchTypeCommand, t.cmdTz)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/help", bot.MatchTypeCommand, t.cmdHelp)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypeCommand, t.cmdStart)
 
