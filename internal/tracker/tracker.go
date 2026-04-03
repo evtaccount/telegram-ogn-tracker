@@ -42,6 +42,7 @@ type Tracker struct {
 	tracking       map[string]*TrackInfo
 	mu             sync.Mutex
 	trackingOn     bool
+	stopCh         chan struct{}
 	chatID         int64
 	sessionActive  bool
 	landing        *Coordinates
@@ -79,6 +80,20 @@ func (t *Tracker) updateFilter() {
 	}
 }
 
+// stopTracking disables tracking and signals goroutines to exit.
+// Must be called with t.mu held.
+func (t *Tracker) stopTracking() {
+	if !t.trackingOn {
+		return
+	}
+	t.trackingOn = false
+	if t.stopCh != nil {
+		close(t.stopCh)
+		t.stopCh = nil
+	}
+	t.aprs.Disconnect()
+}
+
 func NewTracker(bot *tgbotapi.BotAPI) *Tracker {
 	return &Tracker{
 		bot:            bot,
@@ -99,16 +114,12 @@ func (t *Tracker) Run() {
 	updates := t.bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		if update.MyChatMember != nil {
-			// ignore chat member updates
-		}
-
 		if update.Message == nil {
 			continue
 		}
 
-		if update.Message.NewChatMembers != nil {
-			// ignore join messages
+		if update.Message.From == nil {
+			continue
 		}
 
 		if !t.isTrusted(update.Message.From.ID) {

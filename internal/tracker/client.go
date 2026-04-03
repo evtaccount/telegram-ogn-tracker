@@ -9,15 +9,15 @@ import (
 	"ogn/parser"
 )
 
-func (t *Tracker) runClient() {
+func (t *Tracker) runClient(stopCh <-chan struct{}) {
 	log.Println("OGN client started")
 	for {
-		t.mu.Lock()
-		if !t.trackingOn {
-			t.mu.Unlock()
-			break
+		select {
+		case <-stopCh:
+			log.Println("OGN client stopped")
+			return
+		default:
 		}
-		t.mu.Unlock()
 
 		err := t.aprs.Run(func(line string) {
 			log.Printf("raw OGN line: %s", line)
@@ -40,28 +40,28 @@ func (t *Tracker) runClient() {
 			t.mu.Unlock()
 		}, false)
 		if err != nil {
-			t.mu.Lock()
-			active := t.trackingOn
-			t.mu.Unlock()
-			if active {
+			select {
+			case <-stopCh:
+				log.Println("OGN client stopped")
+				return
+			default:
 				log.Printf("OGN client error: %v", err)
 				time.Sleep(5 * time.Second)
-				continue
 			}
 		}
 	}
-	log.Println("OGN client stopped")
 }
 
-func (t *Tracker) sendUpdates() {
+func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		t.mu.Lock()
-		if !t.trackingOn {
-			t.mu.Unlock()
+	for {
+		select {
+		case <-stopCh:
 			return
+		case <-ticker.C:
 		}
+		t.mu.Lock()
 		chatID := t.chatID
 		landing := t.landing
 		local := make(map[string]*TrackInfo)

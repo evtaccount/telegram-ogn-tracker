@@ -13,9 +13,22 @@ func (t *Tracker) isTrusted(userID int64) bool {
 	return true
 }
 
+func (t *Tracker) requireSession(m *tgbotapi.Message) bool {
+	t.mu.Lock()
+	active := t.sessionActive
+	t.mu.Unlock()
+	if !active {
+		if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Run /start_session first")); err != nil {
+			log.Printf("failed to send session required message: %v", err)
+		}
+	}
+	return active
+}
+
 func (t *Tracker) cmdStart(m *tgbotapi.Message) {
 	t.mu.Lock()
 	t.chatID = m.Chat.ID
+	t.stopTracking()
 	t.sessionActive = false
 	t.mu.Unlock()
 
@@ -29,11 +42,8 @@ func (t *Tracker) cmdStart(m *tgbotapi.Message) {
 func (t *Tracker) cmdStartSession(m *tgbotapi.Message) {
 	t.mu.Lock()
 	if t.sessionActive {
+		t.stopTracking()
 		t.tracking = make(map[string]*TrackInfo)
-		if t.trackingOn {
-			t.trackingOn = false
-			t.aprs.Disconnect()
-		}
 	}
 	t.sessionActive = true
 	t.chatID = m.Chat.ID
@@ -48,11 +58,11 @@ func (t *Tracker) cmdStartSession(m *tgbotapi.Message) {
 }
 
 func (t *Tracker) cmdSessionReset(m *tgbotapi.Message) {
-	t.mu.Lock()
-	if t.trackingOn {
-		t.trackingOn = false
-		t.aprs.Disconnect()
+	if !t.requireSession(m) {
+		return
 	}
+	t.mu.Lock()
+	t.stopTracking()
 	t.tracking = make(map[string]*TrackInfo)
 	t.updateFilter()
 	t.chatID = m.Chat.ID
@@ -64,6 +74,9 @@ func (t *Tracker) cmdSessionReset(m *tgbotapi.Message) {
 }
 
 func (t *Tracker) cmdAdd(m *tgbotapi.Message) {
+	if !t.requireSession(m) {
+		return
+	}
 	args := strings.Fields(m.CommandArguments())
 	if len(args) == 0 {
 		if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Usage: /add <ogn_id> [name]")); err != nil {
@@ -96,6 +109,9 @@ func (t *Tracker) cmdAdd(m *tgbotapi.Message) {
 }
 
 func (t *Tracker) cmdRemove(m *tgbotapi.Message) {
+	if !t.requireSession(m) {
+		return
+	}
 	args := m.CommandArguments()
 	if args == "" {
 		if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Usage: /remove <ogn_id>")); err != nil {
@@ -115,6 +131,9 @@ func (t *Tracker) cmdRemove(m *tgbotapi.Message) {
 }
 
 func (t *Tracker) cmdTrackOn(m *tgbotapi.Message) {
+	if !t.requireSession(m) {
+		return
+	}
 	t.mu.Lock()
 	if len(t.tracking) == 0 {
 		t.mu.Unlock()
@@ -131,17 +150,22 @@ func (t *Tracker) cmdTrackOn(m *tgbotapi.Message) {
 		return
 	}
 	t.trackingOn = true
+	t.stopCh = make(chan struct{})
+	stopCh := t.stopCh
 	t.updateFilter()
 	t.chatID = m.Chat.ID
 	t.mu.Unlock()
-	go t.runClient()
-	go t.sendUpdates()
+	go t.runClient(stopCh)
+	go t.sendUpdates(stopCh)
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Tracking enabled")); err != nil {
 		log.Printf("failed to confirm track_on: %v", err)
 	}
 }
 
 func (t *Tracker) cmdTrackOff(m *tgbotapi.Message) {
+	if !t.requireSession(m) {
+		return
+	}
 	t.mu.Lock()
 	if !t.trackingOn {
 		t.mu.Unlock()
@@ -150,37 +174,37 @@ func (t *Tracker) cmdTrackOff(m *tgbotapi.Message) {
 		}
 		return
 	}
-	t.trackingOn = false
+	t.stopTracking()
 	t.mu.Unlock()
-	t.aprs.Disconnect()
 	if _, err := t.bot.Send(tgbotapi.NewMessage(m.Chat.ID, "Tracking disabled")); err != nil {
 		log.Printf("failed to confirm track_off: %v", err)
 	}
 }
 
 func (t *Tracker) cmdList(m *tgbotapi.Message) {
+	if !t.requireSession(m) {
+		return
+	}
 	t.mu.Lock()
-	var users []string
-	for _, info := range t.tracking {
-		entry := ""
+	var entries []string
+	for id, info := range t.tracking {
+		entry := id
 		if info.Name != "" {
-			entry = info.Name
+			entry += " — " + info.Name
 			if info.Username != "" {
-				entry += " (@" + info.Username + ")"
+				entry += " (" + info.Username + ")"
 			}
 		} else if info.Username != "" {
-			entry = "@" + info.Username
+			entry += " — " + info.Username
 		}
-		if entry != "" {
-			users = append(users, entry)
-		}
+		entries = append(entries, entry)
 	}
 	track := "off"
 	if t.trackingOn {
 		track = "on"
 	}
 	t.mu.Unlock()
-	list := strings.Join(users, "\n")
+	list := strings.Join(entries, "\n")
 	if list == "" {
 		list = "none"
 	}
@@ -205,6 +229,9 @@ func (t *Tracker) cmdStatus(m *tgbotapi.Message) {
 }
 
 func (t *Tracker) cmdLanding(m *tgbotapi.Message) {
+	if !t.requireSession(m) {
+		return
+	}
 	t.mu.Lock()
 	t.waitingLanding = true
 	t.landingExpiry = time.Now().Add(2 * time.Minute)
