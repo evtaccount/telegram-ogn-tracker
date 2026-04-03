@@ -46,6 +46,7 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	t.landing = nil
 	t.waitingLanding = false
 	t.summaryMsgID = 0
+	t.drivers = make(map[int64]*DriverInfo)
 	t.mu.Unlock()
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -267,6 +268,8 @@ func (t *Tracker) cmdHelp(ctx context.Context, b *bot.Bot, update *models.Update
 		"/track_on — enable live tracking",
 		"/track_off — disable tracking",
 		"/landing — set landing location",
+		"/driver — become the driver (share live location)",
+		"/driver_off — stop being the driver",
 		"/list — show tracked addresses",
 		"/status — show current state",
 		"/session_reset — stop and clear all",
@@ -280,16 +283,48 @@ func (t *Tracker) cmdHelp(ctx context.Context, b *bot.Bot, update *models.Update
 	}
 }
 
-func (t *Tracker) handleLandingLocation(ctx context.Context, b *bot.Bot, m *models.Message) {
+func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Message) {
+	loc := m.Location
+
 	t.mu.Lock()
-	waiting := t.waitingLanding && time.Now().Before(t.landingExpiry)
-	if waiting {
-		t.landing = &Coordinates{Latitude: m.Location.Latitude, Longitude: m.Location.Longitude}
-		t.waitingLanding = false
+
+	// Driver: check if this user is waiting.
+	if d, ok := t.drivers[m.From.ID]; ok && d.Waiting && time.Now().Before(d.Expiry) {
+		if loc.LivePeriod > 0 {
+			d.Pos = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
+			d.MsgID = m.ID
+			d.Waiting = false
+			kb := t.keyboard()
+			t.mu.Unlock()
+			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID:      m.Chat.ID,
+				Text:        "🚗 Driver location active. Distances will appear in the summary.",
+				ReplyMarkup: kb,
+			}); err != nil {
+				log.Printf("failed to confirm driver location: %v", err)
+			}
+			return
+		}
+		// Static pin — use as temporary position, keep waiting for live.
+		d.Pos = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
+		kb := t.keyboard()
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:      m.Chat.ID,
+			Text:        "📍 Позиция принята. Для непрерывного отслеживания отправьте live-локацию.",
+			ReplyMarkup: kb,
+		}); err != nil {
+			log.Printf("failed to send driver static hint: %v", err)
+		}
+		return
 	}
-	kb := t.keyboard()
-	t.mu.Unlock()
-	if waiting {
+
+	// Landing: expecting a static location pin.
+	if t.waitingLanding && time.Now().Before(t.landingExpiry) {
+		t.landing = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
+		t.waitingLanding = false
+		kb := t.keyboard()
+		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:      m.Chat.ID,
 			Text:        "Landing location saved",
@@ -297,7 +332,29 @@ func (t *Tracker) handleLandingLocation(ctx context.Context, b *bot.Bot, m *mode
 		}); err != nil {
 			log.Printf("failed to confirm landing location: %v", err)
 		}
+		return
 	}
+
+	t.mu.Unlock()
+}
+
+func (t *Tracker) cmdDriver(ctx context.Context, b *bot.Bot, update *models.Update) {
+	m := update.Message
+	if m.From == nil || !t.isTrusted(m.From.ID) {
+		return
+	}
+	if !t.requireSession(ctx, b, m.Chat.ID) {
+		return
+	}
+	t.execDriver(ctx, b, m.Chat.ID, m.From.ID, m.From.Username)
+}
+
+func (t *Tracker) cmdDriverOff(ctx context.Context, b *bot.Bot, update *models.Update) {
+	m := update.Message
+	if m.From == nil || !t.isTrusted(m.From.ID) {
+		return
+	}
+	t.execDriverOff(ctx, b, m.Chat.ID, m.From.ID)
 }
 
 // --- Core logic used by both command and callback handlers ---
@@ -310,6 +367,7 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 	t.landing = nil
 	t.waitingLanding = false
 	t.summaryMsgID = 0
+	t.drivers = make(map[int64]*DriverInfo)
 	t.chatID = chatID
 	t.mu.Unlock()
 
@@ -483,6 +541,113 @@ func (t *Tracker) execLanding(ctx context.Context, b *bot.Bot, chatID int64) {
 	}
 }
 
+func (t *Tracker) execDriver(ctx context.Context, b *bot.Bot, chatID int64, userID int64, username string) {
+	t.mu.Lock()
+	if d, ok := t.drivers[userID]; ok && d.MsgID != 0 {
+		kb := t.keyboard()
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:      chatID,
+			Text:        "🚗 You're already driving. Use /driver_off to stop.",
+			ReplyMarkup: kb,
+		}); err != nil {
+			log.Printf("failed to send driver active message: %v", err)
+		}
+		return
+	}
+
+	gen := 1
+	if existing, ok := t.drivers[userID]; ok {
+		gen = existing.WaitGen + 1
+	}
+	t.drivers[userID] = &DriverInfo{
+		Waiting: true,
+		Expiry:  time.Now().Add(2 * time.Minute),
+		WaitGen: gen,
+	}
+	t.chatID = chatID
+	t.mu.Unlock()
+
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: chatID,
+		Text:   "Share your live location within 2 minutes to become the driver.",
+	}); err != nil {
+		log.Printf("failed to send driver prompt: %v", err)
+	}
+
+	go t.driverWaitTimeout(gen, userID, chatID, username)
+}
+
+func (t *Tracker) driverWaitTimeout(gen int, userID int64, chatID int64, username string) {
+	time.Sleep(2 * time.Minute)
+
+	t.mu.Lock()
+	d, ok := t.drivers[userID]
+	if !ok || d.WaitGen != gen || !d.Waiting {
+		t.mu.Unlock()
+		return
+	}
+	d.Expiry = time.Now().Add(2 * time.Minute)
+	b := t.bot
+	t.mu.Unlock()
+
+	if b == nil {
+		return
+	}
+
+	var mention string
+	if username != "" {
+		mention = "@" + username
+	} else {
+		mention = fmt.Sprintf(`<a href="tg://user?id=%d">водитель</a>`, userID)
+	}
+	text := fmt.Sprintf("⏰ %s, вы не расшарили локацию. Отправьте live-локацию в течение 2 минут.", mention)
+
+	ctx := context.Background()
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:    chatID,
+		Text:      text,
+		ParseMode: models.ParseModeHTML,
+	}); err != nil {
+		log.Printf("failed to send driver reminder: %v", err)
+	}
+
+	time.Sleep(2 * time.Minute)
+
+	t.mu.Lock()
+	d, ok = t.drivers[userID]
+	if !ok || d.WaitGen != gen || !d.Waiting {
+		t.mu.Unlock()
+		return
+	}
+	d.Waiting = false
+	if d.Pos == nil {
+		delete(t.drivers, userID)
+	}
+	t.mu.Unlock()
+	log.Printf("driver wait timed out for user %d", userID)
+}
+
+func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, userID int64) {
+	t.mu.Lock()
+	_, was := t.drivers[userID]
+	delete(t.drivers, userID)
+	kb := t.keyboard()
+	t.mu.Unlock()
+
+	text := "🚗 You're not driving"
+	if was {
+		text = "🚗 Driver location cleared"
+	}
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        text,
+		ReplyMarkup: kb,
+	}); err != nil {
+		log.Printf("failed to confirm driver off: %v", err)
+	}
+}
+
 func (t *Tracker) execPickup(ctx context.Context, b *bot.Bot, id string) {
 	t.mu.Lock()
 	chatID := t.chatID
@@ -566,6 +731,30 @@ func (t *Tracker) cbLanding(ctx context.Context, b *bot.Bot, update *models.Upda
 	chatID := t.chatID
 	t.mu.Unlock()
 	t.execLanding(ctx, b, chatID)
+}
+
+func (t *Tracker) cbDriver(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
+	t.answerCallback(ctx, b, cq)
+	if !t.isTrusted(cq.From.ID) {
+		return
+	}
+	t.mu.Lock()
+	chatID := t.chatID
+	t.mu.Unlock()
+	t.execDriver(ctx, b, chatID, cq.From.ID, cq.From.Username)
+}
+
+func (t *Tracker) cbDriverOff(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
+	t.answerCallback(ctx, b, cq)
+	if !t.isTrusted(cq.From.ID) {
+		return
+	}
+	t.mu.Lock()
+	chatID := t.chatID
+	t.mu.Unlock()
+	t.execDriverOff(ctx, b, chatID, cq.From.ID)
 }
 
 func (t *Tracker) cbSessionReset(ctx context.Context, b *bot.Bot, update *models.Update) {

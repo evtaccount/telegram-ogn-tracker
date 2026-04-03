@@ -138,7 +138,23 @@ func (t *Tracker) sendLandingAlert(e *landingEvent, chatID int64) {
 	}
 }
 
-func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinates) string {
+// nearestDriver returns the distance and bearing from the closest driver to the given point.
+func nearestDriver(lat, lon float64, drivers []*Coordinates) (distKm float64, bearing float64, found bool) {
+	minDist := math.MaxFloat64
+	for _, d := range drivers {
+		dist, b := distanceAndBearing(d.Latitude, d.Longitude, lat, lon)
+		if dist < minDist {
+			minDist = dist
+			bearing = b
+		}
+	}
+	if minDist == math.MaxFloat64 {
+		return 0, 0, false
+	}
+	return minDist, bearing, true
+}
+
+func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinates, drivers []*Coordinates) string {
 	pos := info.Position
 
 	// Header: status emoji + ID + name.
@@ -176,6 +192,13 @@ func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinat
 	if landing != nil {
 		distKm, bearing := distanceAndBearing(pos.Latitude, pos.Longitude, landing.Latitude, landing.Longitude)
 		text += fmt.Sprintf("\n📍 %.1fkm to landing (%s)", distKm, formatBearing(bearing))
+	}
+
+	// Distance from nearest driver to landed pilot.
+	if info.Status == StatusLanded {
+		if distKm, bearing, ok := nearestDriver(pos.Latitude, pos.Longitude, drivers); ok {
+			text += fmt.Sprintf("\n🚗 %.1fkm from driver (%s)", distKm, formatBearing(bearing))
+		}
 	}
 
 	// Last update time.
@@ -217,7 +240,7 @@ func landedButtons(local map[string]*TrackInfo) *models.InlineKeyboardMarkup {
 	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
-func (t *Tracker) buildSummary(local map[string]*TrackInfo, landing *Coordinates) string {
+func (t *Tracker) buildSummary(local map[string]*TrackInfo, landing *Coordinates, drivers []*Coordinates) string {
 	type entry struct {
 		id   string
 		info *TrackInfo
@@ -244,7 +267,27 @@ func (t *Tracker) buildSummary(local map[string]*TrackInfo, landing *Coordinates
 		sort.Slice(entries, func(i, j int) bool { return entries[i].id < entries[j].id })
 	}
 	sortByID(flying)
-	sortByID(landed)
+	// Sort landed pilots by distance from nearest driver (nearest first).
+	if len(drivers) > 0 && len(landed) > 0 {
+		sort.Slice(landed, func(i, j int) bool {
+			pi := landed[i].info.Position
+			pj := landed[j].info.Position
+			if pi == nil && pj == nil {
+				return landed[i].id < landed[j].id
+			}
+			if pi == nil {
+				return false
+			}
+			if pj == nil {
+				return true
+			}
+			di, _, _ := nearestDriver(pi.Latitude, pi.Longitude, drivers)
+			dj, _, _ := nearestDriver(pj.Latitude, pj.Longitude, drivers)
+			return di < dj
+		})
+	} else {
+		sortByID(landed)
+	}
 	sortByID(pickedUp)
 	sortByID(waiting)
 
@@ -264,14 +307,17 @@ func (t *Tracker) buildSummary(local map[string]*TrackInfo, landing *Coordinates
 	if len(counts) > 0 {
 		header += " — " + strings.Join(counts, ", ")
 	}
+	if len(drivers) > 0 {
+		header += fmt.Sprintf("\n🚗 %d driver(s)", len(drivers))
+	}
 
 	// Build per-pilot sections.
 	var sections []string
 	for _, e := range flying {
-		sections = append(sections, t.formatTrackText(e.id, e.info, landing))
+		sections = append(sections, t.formatTrackText(e.id, e.info, landing, drivers))
 	}
 	for _, e := range landed {
-		sections = append(sections, t.formatTrackText(e.id, e.info, landing))
+		sections = append(sections, t.formatTrackText(e.id, e.info, landing, drivers))
 	}
 	for _, e := range pickedUp {
 		label := "✅ " + e.id
@@ -304,6 +350,13 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		t.mu.Lock()
 		chatID := t.chatID
 		landing := t.landing
+		var drivers []*Coordinates
+		for _, d := range t.drivers {
+			if d.Pos != nil {
+				cp := *d.Pos
+				drivers = append(drivers, &cp)
+			}
+		}
 		b := t.bot
 		summaryMsgID := t.summaryMsgID
 		local := make(map[string]*TrackInfo)
@@ -368,7 +421,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		}
 
 		// Send or update the single summary message.
-		summary := t.buildSummary(local, landing)
+		summary := t.buildSummary(local, landing, drivers)
 		kb := landedButtons(local)
 		if summaryMsgID != 0 {
 			if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{

@@ -59,6 +59,14 @@ type Coordinates struct {
 	Longitude float64
 }
 
+type DriverInfo struct {
+	Pos     *Coordinates
+	MsgID   int
+	Waiting bool
+	Expiry  time.Time
+	WaitGen int
+}
+
 type Tracker struct {
 	bot            *bot.Bot
 	aprs           *client.Client
@@ -73,6 +81,7 @@ type Tracker struct {
 	landingExpiry  time.Time
 	devices        map[string]ddb.Device
 	summaryMsgID   int
+	drivers        map[int64]*DriverInfo
 }
 
 var aircraftTypes = map[int]string{
@@ -167,6 +176,15 @@ func (t *Tracker) keyboard() *models.InlineKeyboardMarkup {
 	if !t.sessionActive || len(t.tracking) == 0 {
 		return nil
 	}
+	var driverRow []models.InlineKeyboardButton
+	driverRow = append(driverRow, models.InlineKeyboardButton{Text: "🚗 Driver", CallbackData: "driver"})
+	for _, d := range t.drivers {
+		if d.Pos != nil {
+			driverRow = append(driverRow, models.InlineKeyboardButton{Text: "🚗 Stop", CallbackData: "driver_off"})
+			break
+		}
+	}
+
 	if t.trackingOn {
 		return &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -175,6 +193,7 @@ func (t *Tracker) keyboard() *models.InlineKeyboardMarkup {
 					{Text: "📋 List", CallbackData: "list"},
 					{Text: "📍 Landing", CallbackData: "landing"},
 				},
+				driverRow,
 			},
 		}
 	}
@@ -193,6 +212,7 @@ func NewTracker() *Tracker {
 	t := &Tracker{
 		aprs:     client.New("N0CALL", ""),
 		tracking: make(map[string]*TrackInfo),
+		drivers:  make(map[int64]*DriverInfo),
 	}
 	go t.loadDevices()
 	return t
@@ -209,6 +229,8 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/list", bot.MatchTypeCommand, t.cmdList)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/status", bot.MatchTypeCommand, t.cmdStatus)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/landing", bot.MatchTypeCommand, t.cmdLanding)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/driver", bot.MatchTypeCommand, t.cmdDriver)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/driver_off", bot.MatchTypeCommand, t.cmdDriverOff)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/help", bot.MatchTypeCommand, t.cmdHelp)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypeCommand, t.cmdStart)
 
@@ -217,6 +239,8 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "track_off", bot.MatchTypeExact, t.cbTrackOff)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "list", bot.MatchTypeExact, t.cbList)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "landing", bot.MatchTypeExact, t.cbLanding)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "driver", bot.MatchTypeExact, t.cbDriver)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "driver_off", bot.MatchTypeExact, t.cbDriverOff)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset", bot.MatchTypeExact, t.cbSessionReset)
 }
 
@@ -236,6 +260,22 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 		return
 	}
 
+	// Handle driver live location updates (edited messages).
+	if update.EditedMessage != nil && update.EditedMessage.Location != nil {
+		t.mu.Lock()
+		for _, d := range t.drivers {
+			if d.MsgID != 0 && update.EditedMessage.ID == d.MsgID {
+				d.Pos = &Coordinates{
+					Latitude:  update.EditedMessage.Location.Latitude,
+					Longitude: update.EditedMessage.Location.Longitude,
+				}
+				break
+			}
+		}
+		t.mu.Unlock()
+		return
+	}
+
 	if update.Message == nil || update.Message.From == nil {
 		return
 	}
@@ -243,7 +283,7 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 		return
 	}
 	if update.Message.Location != nil {
-		t.handleLandingLocation(ctx, b, update.Message)
+		t.handleLocation(ctx, b, update.Message)
 	}
 }
 
