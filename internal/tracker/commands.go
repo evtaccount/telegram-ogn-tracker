@@ -394,7 +394,7 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Lock()
 	var entries []string
 	for id, info := range t.tracking {
-		entry := id
+		entry := info.Status.Emoji() + " " + id
 		if info.Name != "" {
 			entry += " — " + info.Name
 			if info.Username != "" {
@@ -402,6 +402,12 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 			}
 		} else if info.Username != "" {
 			entry += " — " + info.Username
+		}
+		if info.Status == StatusLanded && !info.LandingTime.IsZero() {
+			entry += fmt.Sprintf(" (landed %s)", info.LandingTime.Format("15:04"))
+		}
+		if info.Status == StatusPickedUp {
+			entry += " (picked up)"
 		}
 		if t.devices != nil {
 			if dev, ok := t.devices[id]; ok {
@@ -452,6 +458,33 @@ func (t *Tracker) execLanding(ctx context.Context, b *bot.Bot, chatID int64) {
 		Text:   "Send landing location within 2 minutes",
 	}); err != nil {
 		log.Printf("failed to request landing location: %v", err)
+	}
+}
+
+func (t *Tracker) execPickup(ctx context.Context, b *bot.Bot, id string) {
+	t.mu.Lock()
+	chatID := t.chatID
+	info, ok := t.tracking[id]
+	if ok {
+		info.Status = StatusPickedUp
+	}
+	kb := t.keyboard()
+	t.mu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	label := id
+	if name := info.DisplayName(); name != "" {
+		label = name
+	}
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        fmt.Sprintf("✅ %s picked up", label),
+		ReplyMarkup: kb,
+	}); err != nil {
+		log.Printf("failed to confirm pickup for %s: %v", id, err)
 	}
 }
 

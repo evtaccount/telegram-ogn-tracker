@@ -4,13 +4,30 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"time"
 
 	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 	"ogn/parser"
 )
 
-const staleThreshold = 5 * time.Minute
+const (
+	staleThreshold         = 5 * time.Minute
+	landingSpeedThreshold  = 5.0  // km/h — below walking speed, filters out GPS noise
+	landingClimbThreshold  = 0.3  // m/s — any thermal produces > 0.3 m/s climb
+	landingConfirmDuration = 90 * time.Second
+)
+
+// landingEvent captures data for a landing alert sent outside the mutex.
+type landingEvent struct {
+	id   string
+	name string
+	lat  float64
+	lon  float64
+	alt  float64
+	time time.Time
+}
 
 func (t *Tracker) runClient(stopCh <-chan struct{}) {
 	log.Println("OGN client started")
@@ -29,13 +46,50 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 			}
 			origID := msg.Callsign
 			id := shortID(origID)
+
+			var alert *landingEvent
+
 			t.mu.Lock()
-			if info, ok := t.tracking[id]; ok {
+			info, ok := t.tracking[id]
+			if ok && info.Status != StatusPickedUp {
 				info.Position = msg
 				info.LastUpdate = time.Now()
-				log.Printf("beacon %s: %.5f,%.5f %.0fm %.0fkm/h", id, msg.Latitude, msg.Longitude, msg.Altitude, msg.GroundSpeed)
+
+				// Landing detection: speed AND climb rate near zero for landingConfirmDuration.
+				// Speed alone is insufficient — a pilot thermalling in a weak lift
+				// can have low ground speed but positive climb rate.
+				// Altitude above terrain is unavailable without DEM data, so we rely
+				// on the combination of near-zero speed and near-zero vertical speed.
+				if info.Status == StatusFlying {
+					onGround := msg.GroundSpeed < landingSpeedThreshold &&
+						math.Abs(msg.ClimbRate) < landingClimbThreshold
+					if onGround {
+						if info.LowSpeedSince.IsZero() {
+							info.LowSpeedSince = time.Now()
+						} else if time.Since(info.LowSpeedSince) > landingConfirmDuration {
+							info.Status = StatusLanded
+							info.LandingTime = time.Now()
+							alert = &landingEvent{
+								id:   id,
+								name: info.DisplayName(),
+								lat:  msg.Latitude,
+								lon:  msg.Longitude,
+								alt:  msg.Altitude,
+								time: info.LandingTime,
+							}
+							log.Printf("landing detected for %s at %.5f,%.5f", id, msg.Latitude, msg.Longitude)
+						}
+					} else if !onGround {
+						info.LowSpeedSince = time.Time{}
+					}
+				}
 			}
+			chatID := t.chatID
 			t.mu.Unlock()
+
+			if alert != nil {
+				t.sendLandingAlert(alert, chatID)
+			}
 		}, false)
 		if err != nil {
 			select {
@@ -50,15 +104,50 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 	}
 }
 
+func (t *Tracker) sendLandingAlert(e *landingEvent, chatID int64) {
+	b := t.bot
+	if b == nil {
+		return
+	}
+
+	label := e.id
+	if e.name != "" {
+		label = e.name
+	}
+	text := fmt.Sprintf("🪂 %s landed!", label)
+	text += fmt.Sprintf("\n⬆️ %.0fm  ⏱ %s", e.alt, e.time.Format("15:04:05"))
+
+	kb := &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{Text: "🗺 Navigate", URL: mapsNavURL(e.lat, e.lon)},
+				{Text: "✅ Picked up", CallbackData: "pickup:" + e.id},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        text,
+		ReplyMarkup: kb,
+	}); err != nil {
+		log.Printf("failed to send landing alert for %s: %v", e.id, err)
+	}
+}
+
 func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinates) string {
 	pos := info.Position
 
-	// Header: ID and name.
-	text := id
+	// Header: status emoji + ID + name.
+	text := info.Status.Emoji() + " " + id
 	if info.Name != "" {
 		text += " — " + info.Name
 	} else if info.Username != "" {
 		text += " — " + info.Username
+	}
+	if info.Status == StatusLanded && !info.LandingTime.IsZero() {
+		text += fmt.Sprintf(" (landed %s)", info.LandingTime.Format("15:04"))
 	}
 
 	// Stale data warning.
@@ -123,7 +212,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		ctx := context.Background()
 
 		for id, info := range local {
-			if info.Position == nil {
+			if info.Position == nil || info.Status == StatusPickedUp {
 				continue
 			}
 

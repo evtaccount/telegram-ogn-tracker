@@ -16,13 +16,43 @@ import (
 	"ogn/parser"
 )
 
+// PilotStatus represents the current state of a tracked pilot.
+type PilotStatus int
+
+const (
+	StatusFlying   PilotStatus = iota
+	StatusLanded
+	StatusPickedUp
+)
+
+func (s PilotStatus) Emoji() string {
+	switch s {
+	case StatusLanded:
+		return "🪂"
+	case StatusPickedUp:
+		return "✅"
+	default:
+		return "✈️"
+	}
+}
+
 type TrackInfo struct {
-	MessageID  int
-	TextID     int
-	Position   *parser.PositionMessage
-	Name       string
-	Username   string
-	LastUpdate time.Time
+	MessageID     int
+	TextID        int
+	Position      *parser.PositionMessage
+	Name          string
+	Username      string
+	LastUpdate    time.Time
+	Status        PilotStatus
+	LandingTime   time.Time
+	LowSpeedSince time.Time
+}
+
+func (ti *TrackInfo) DisplayName() string {
+	if ti.Name != "" {
+		return ti.Name
+	}
+	return ti.Username
 }
 
 type Coordinates struct {
@@ -77,6 +107,10 @@ func bearingEmoji(deg float64) string {
 func formatBearing(deg float64) string {
 	deg = math.Mod(deg+360, 360)
 	return fmt.Sprintf("%s %03.0f°", bearingEmoji(deg), deg)
+}
+
+func mapsNavURL(lat, lon float64) string {
+	return fmt.Sprintf("https://www.google.com/maps/dir/?api=1&destination=%.6f,%.6f", lat, lon)
 }
 
 // updateFilter rebuilds the APRS filter based on the currently tracked IDs.
@@ -186,6 +220,21 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 }
 
 func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
+	// Handle pickup callback queries (dynamic IDs, can't use exact match).
+	if update.CallbackQuery != nil {
+		cq := update.CallbackQuery
+		if strings.HasPrefix(cq.Data, "pickup:") {
+			t.answerCallback(ctx, b, cq)
+			if !t.isTrusted(cq.From.ID) {
+				return
+			}
+			id := cq.Data[7:]
+			t.execPickup(ctx, b, id)
+			return
+		}
+		return
+	}
+
 	if update.Message == nil || update.Message.From == nil {
 		return
 	}
