@@ -50,6 +50,7 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	t.drivers = make(map[int64]*DriverInfo)
 	t.trackArea = nil
 	t.waitingArea = false
+	t.saveState()
 	t.mu.Unlock()
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -136,6 +137,7 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 		}
 	}
 	kb := t.keyboard()
+	t.saveState()
 	t.mu.Unlock()
 
 	text := "Added " + id
@@ -179,6 +181,7 @@ func (t *Tracker) cmdRemove(ctx context.Context, b *bot.Bot, update *models.Upda
 	delete(t.tracking, id)
 	t.updateFilter()
 	kb := t.keyboard()
+	t.saveState()
 	t.mu.Unlock()
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -330,6 +333,7 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 		t.landing = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
 		t.waitingLanding = false
 		kb := t.keyboard()
+		t.saveState()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:      m.Chat.ID,
@@ -354,6 +358,7 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 		t.updateFilter()
 		radius := t.trackAreaRadius
 		kb := t.keyboard()
+		t.saveState()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:      m.Chat.ID,
@@ -426,6 +431,7 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 	t.trackArea = nil
 	t.waitingArea = false
 	t.chatID = chatID
+	t.saveState()
 	t.mu.Unlock()
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -466,6 +472,7 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.updateFilter()
 	t.chatID = chatID
 	kb := t.keyboard()
+	t.saveState()
 	t.mu.Unlock()
 
 	go t.runClient(stopCh)
@@ -496,6 +503,7 @@ func (t *Tracker) execTrackOff(ctx context.Context, b *bot.Bot, chatID int64) {
 	}
 	t.stopTracking()
 	kb := t.keyboard()
+	t.saveState()
 	t.mu.Unlock()
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -626,6 +634,7 @@ func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) {
 	}
 	t.updateFilter()
 	kb := t.keyboard()
+	t.saveState()
 	t.mu.Unlock()
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -752,6 +761,9 @@ func (t *Tracker) execPickup(ctx context.Context, b *bot.Bot, id string) {
 		info.Status = StatusPickedUp
 	}
 	kb := t.keyboard()
+	if ok {
+		t.saveState()
+	}
 	t.mu.Unlock()
 
 	if !ok {

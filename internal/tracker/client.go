@@ -94,6 +94,9 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 				}
 			}
 			chatID := t.chatID
+			if alert != nil {
+				t.saveState()
+			}
 			t.mu.Unlock()
 
 			if alert != nil {

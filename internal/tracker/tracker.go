@@ -87,6 +87,7 @@ type Tracker struct {
 	trackAreaRadius int
 	waitingArea     bool
 	areaExpiry      time.Time
+	resumeOnStart   bool
 }
 
 var aircraftTypes = map[int]string{
@@ -247,6 +248,16 @@ func NewTracker() *Tracker {
 		tracking: make(map[string]*TrackInfo),
 		drivers:  make(map[int64]*DriverInfo),
 	}
+
+	// Restore previous session.
+	t.mu.Lock()
+	resumeTracking := t.loadState()
+	if resumeTracking {
+		t.updateFilter()
+	}
+	t.mu.Unlock()
+	t.resumeOnStart = resumeTracking
+
 	go t.loadDevices()
 	return t
 }
@@ -279,6 +290,18 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "area", bot.MatchTypeExact, t.cbArea)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "area_off", bot.MatchTypeExact, t.cbAreaOff)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset", bot.MatchTypeExact, t.cbSessionReset)
+
+	// Auto-resume tracking if it was active before restart.
+	if t.resumeOnStart {
+		t.mu.Lock()
+		t.trackingOn = true
+		t.stopCh = make(chan struct{})
+		stopCh := t.stopCh
+		t.mu.Unlock()
+		go t.runClient(stopCh)
+		go t.sendUpdates(stopCh)
+		log.Println("auto-resumed tracking from saved session")
+	}
 }
 
 func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
