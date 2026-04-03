@@ -21,7 +21,7 @@ func (t *Tracker) runClient() {
 
 		err := t.aprs.Run(func(line string) {
 			log.Printf("raw OGN line: %s", line)
-			msg, err := parser.Parse(line)
+			msg, err := parser.ParsePosition(line)
 			if err != nil {
 				log.Printf("failed to parse line: %v", err)
 				return
