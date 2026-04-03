@@ -37,14 +37,15 @@ func (s PilotStatus) Emoji() string {
 }
 
 type TrackInfo struct {
-	MessageID     int
-	Position      *parser.PositionMessage
-	Name          string
-	Username      string
-	LastUpdate    time.Time
-	Status        PilotStatus
-	LandingTime   time.Time
+	MessageID      int
+	Position       *parser.PositionMessage
+	Name           string
+	Username       string
+	LastUpdate     time.Time
+	Status         PilotStatus
+	LandingTime    time.Time
 	LowSpeedSince time.Time
+	AutoDiscovered bool
 }
 
 func (ti *TrackInfo) DisplayName() string {
@@ -81,7 +82,11 @@ type Tracker struct {
 	landingExpiry  time.Time
 	devices        map[string]ddb.Device
 	summaryMsgID   int
-	drivers        map[int64]*DriverInfo
+	drivers         map[int64]*DriverInfo
+	trackArea       *Coordinates
+	trackAreaRadius int
+	waitingArea     bool
+	areaExpiry      time.Time
 }
 
 var aircraftTypes = map[int]string{
@@ -122,18 +127,36 @@ func mapsNavURL(lat, lon float64) string {
 	return fmt.Sprintf("https://www.google.com/maps/dir/?api=1&destination=%.6f,%.6f", lat, lon)
 }
 
-// updateFilter rebuilds the APRS filter based on the currently tracked IDs.
+// updateFilter rebuilds the APRS filter based on tracked IDs and area.
 func (t *Tracker) updateFilter() {
+	var filters []string
+
+	// Budlist for explicitly added IDs.
 	ids := make([]string, 0, len(t.tracking))
 	filterable := true
-	for id := range t.tracking {
+	for id, info := range t.tracking {
+		if info.AutoDiscovered {
+			continue
+		}
 		ids = append(ids, id)
 		if len(id) <= 6 {
 			filterable = false
 		}
 	}
 	if len(ids) > 0 && filterable {
-		t.aprs.Filter = client.BudlistFilter(ids...)
+		filters = append(filters, client.BudlistFilter(ids...))
+	}
+
+	// Range filter for area tracking.
+	if t.trackArea != nil {
+		filters = append(filters, client.RangeFilter(t.trackArea.Latitude, t.trackArea.Longitude, t.trackAreaRadius))
+	}
+
+	if len(filters) > 0 {
+		t.aprs.Filter = client.CombineFilters(filters...)
+	} else if len(ids) > 0 {
+		// Short IDs without area — no filter (full feed).
+		t.aprs.Filter = ""
 	} else {
 		t.aprs.Filter = ""
 	}
@@ -173,9 +196,14 @@ func (t *Tracker) loadDevices() {
 // keyboard returns an inline keyboard based on current tracker state.
 // Must be called with t.mu held.
 func (t *Tracker) keyboard() *models.InlineKeyboardMarkup {
-	if !t.sessionActive || len(t.tracking) == 0 {
+	if !t.sessionActive {
 		return nil
 	}
+	hasContent := len(t.tracking) > 0 || t.trackArea != nil
+	if !hasContent {
+		return nil
+	}
+
 	var driverRow []models.InlineKeyboardButton
 	driverRow = append(driverRow, models.InlineKeyboardButton{Text: "🚗 Driver", CallbackData: "driver"})
 	for _, d := range t.drivers {
@@ -183,6 +211,11 @@ func (t *Tracker) keyboard() *models.InlineKeyboardMarkup {
 			driverRow = append(driverRow, models.InlineKeyboardButton{Text: "🚗 Stop", CallbackData: "driver_off"})
 			break
 		}
+	}
+
+	areaBtn := models.InlineKeyboardButton{Text: "📡 Area", CallbackData: "area"}
+	if t.trackArea != nil {
+		areaBtn = models.InlineKeyboardButton{Text: "📡 Area off", CallbackData: "area_off"}
 	}
 
 	if t.trackingOn {
@@ -193,7 +226,7 @@ func (t *Tracker) keyboard() *models.InlineKeyboardMarkup {
 					{Text: "📋 List", CallbackData: "list"},
 					{Text: "📍 Landing", CallbackData: "landing"},
 				},
-				driverRow,
+				{areaBtn, driverRow[0]},
 			},
 		}
 	}
@@ -231,6 +264,8 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/landing", bot.MatchTypeCommand, t.cmdLanding)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/driver", bot.MatchTypeCommand, t.cmdDriver)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/driver_off", bot.MatchTypeCommand, t.cmdDriverOff)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/area", bot.MatchTypeCommand, t.cmdArea)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/area_off", bot.MatchTypeCommand, t.cmdAreaOff)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/help", bot.MatchTypeCommand, t.cmdHelp)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypeCommand, t.cmdStart)
 
@@ -241,6 +276,8 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "landing", bot.MatchTypeExact, t.cbLanding)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "driver", bot.MatchTypeExact, t.cbDriver)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "driver_off", bot.MatchTypeExact, t.cbDriverOff)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "area", bot.MatchTypeExact, t.cbArea)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "area_off", bot.MatchTypeExact, t.cbAreaOff)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset", bot.MatchTypeExact, t.cbSessionReset)
 }
 

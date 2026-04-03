@@ -53,6 +53,13 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 
 			t.mu.Lock()
 			info, ok := t.tracking[id]
+			// Auto-discover aircraft from area tracking.
+			if !ok && t.trackArea != nil {
+				info = &TrackInfo{AutoDiscovered: true}
+				t.tracking[id] = info
+				ok = true
+				log.Printf("auto-discovered %s in area", id)
+			}
 			if ok && info.Status != StatusPickedUp {
 				info.Position = msg
 				info.LastUpdate = time.Now()
@@ -157,12 +164,31 @@ func nearestDriver(lat, lon float64, drivers []*Coordinates) (distKm float64, be
 func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinates, drivers []*Coordinates) string {
 	pos := info.Position
 
-	// Header: status emoji + ID + name.
+	// Header: status emoji + ID + name/DDB info.
 	text := info.Status.Emoji() + " " + id
 	if info.Name != "" {
 		text += " — " + info.Name
 	} else if info.Username != "" {
 		text += " — " + info.Username
+	} else if info.AutoDiscovered && t.devices != nil {
+		if dev, ok := t.devices[id]; ok {
+			var parts []string
+			if dev.AircraftModel != "" {
+				parts = append(parts, dev.AircraftModel)
+			}
+			if dev.Registration != "" {
+				parts = append(parts, dev.Registration)
+			}
+			if dev.CN != "" {
+				parts = append(parts, "CN:"+dev.CN)
+			}
+			if len(parts) > 0 {
+				text += " — " + strings.Join(parts, " | ")
+			}
+		}
+		if name, ok := aircraftTypes[pos.AircraftType]; ok && pos.AircraftType > 0 {
+			text += " [" + name + "]"
+		}
 	}
 	if info.Status == StatusLanded && !info.LandingTime.IsZero() {
 		text += fmt.Sprintf(" (landed %s)", info.LandingTime.Format("15:04"))
@@ -240,7 +266,7 @@ func landedButtons(local map[string]*TrackInfo) *models.InlineKeyboardMarkup {
 	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
-func (t *Tracker) buildSummary(local map[string]*TrackInfo, landing *Coordinates, drivers []*Coordinates) string {
+func (t *Tracker) buildSummary(local map[string]*TrackInfo, landing *Coordinates, drivers []*Coordinates, areaRadius int) string {
 	type entry struct {
 		id   string
 		info *TrackInfo
@@ -307,6 +333,9 @@ func (t *Tracker) buildSummary(local map[string]*TrackInfo, landing *Coordinates
 	if len(counts) > 0 {
 		header += " — " + strings.Join(counts, ", ")
 	}
+	if areaRadius > 0 {
+		header += fmt.Sprintf("\n📡 Area: %dkm radius", areaRadius)
+	}
 	if len(drivers) > 0 {
 		header += fmt.Sprintf("\n🚗 %d driver(s)", len(drivers))
 	}
@@ -357,6 +386,10 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 				drivers = append(drivers, &cp)
 			}
 		}
+		areaRadius := 0
+		if t.trackArea != nil {
+			areaRadius = t.trackAreaRadius
+		}
 		b := t.bot
 		summaryMsgID := t.summaryMsgID
 		local := make(map[string]*TrackInfo)
@@ -372,9 +405,9 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 
 		ctx := context.Background()
 
-		// Update per-pilot live locations on the map.
+		// Update per-pilot live locations on the map (skip auto-discovered).
 		for id, info := range local {
-			if info.Position == nil || info.Status == StatusPickedUp {
+			if info.Position == nil || info.Status == StatusPickedUp || info.AutoDiscovered {
 				continue
 			}
 
@@ -421,7 +454,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		}
 
 		// Send or update the single summary message.
-		summary := t.buildSummary(local, landing, drivers)
+		summary := t.buildSummary(local, landing, drivers, areaRadius)
 		kb := landedButtons(local)
 		if summaryMsgID != 0 {
 			if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
