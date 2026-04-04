@@ -395,7 +395,7 @@ func (t *Tracker) cmdTrackOff(ctx context.Context, b *bot.Bot, update *models.Up
 	if !t.requireSession(ctx, b, m.Chat.ID) {
 		return
 	}
-	t.execTrackOff(ctx, b, m.Chat.ID)
+	t.askTrackOffConfirm(ctx, b, m.Chat.ID)
 }
 
 func (t *Tracker) cmdList(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -989,7 +989,7 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	}
 }
 
-func (t *Tracker) execTrackOff(ctx context.Context, b *bot.Bot, chatID int64) {
+func (t *Tracker) askTrackOffConfirm(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Lock()
 	s := t.session
 	if !s.TrackingOn {
@@ -1002,6 +1002,32 @@ func (t *Tracker) execTrackOff(ctx context.Context, b *bot.Bot, chatID int64) {
 		}); err != nil {
 			log.Printf("failed to confirm track_off: %v", err)
 		}
+		return
+	}
+	t.mu.Unlock()
+
+	kb := &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{Text: "Остановить", CallbackData: "track_off_confirm"},
+				{Text: "Отмена", CallbackData: "track_off_cancel"},
+			},
+		},
+	}
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        "Остановить трекинг?",
+		ReplyMarkup: kb,
+	}); err != nil {
+		log.Printf("failed to send track_off confirmation: %v", err)
+	}
+}
+
+func (t *Tracker) execTrackOff(ctx context.Context, b *bot.Bot, chatID int64) {
+	t.mu.Lock()
+	s := t.session
+	if !s.TrackingOn {
+		t.mu.Unlock()
 		return
 	}
 	s.stopTracking(t.aprs)
@@ -1337,7 +1363,7 @@ func (t *Tracker) cbTrackOff(ctx context.Context, b *bot.Bot, update *models.Upd
 		chatID = t.session.ChatID
 	}
 	t.mu.Unlock()
-	t.execTrackOff(ctx, b, chatID)
+	t.askTrackOffConfirm(ctx, b, chatID)
 }
 
 func (t *Tracker) cbList(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -1502,7 +1528,40 @@ func (t *Tracker) cbSessionResetWipe(ctx context.Context, b *bot.Bot, update *mo
 func (t *Tracker) cbSessionResetCancel(ctx context.Context, b *bot.Bot, update *models.Update) {
 	cq := update.CallbackQuery
 	t.answerCallback(ctx, b, cq)
-	// Remove the confirmation message.
+	if cq.Message.Message != nil {
+		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
+			ChatID:    cq.Message.Message.Chat.ID,
+			MessageID: cq.Message.Message.ID,
+		})
+	}
+}
+
+func (t *Tracker) cbTrackOffConfirm(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
+	t.answerCallback(ctx, b, cq)
+	if !t.isTrusted(cq.From.ID) {
+		return
+	}
+	if cq.Message.Message != nil {
+		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
+			ChatID:    cq.Message.Message.Chat.ID,
+			MessageID: cq.Message.Message.ID,
+		})
+	}
+	t.mu.Lock()
+	chatID := int64(0)
+	if t.session != nil {
+		chatID = t.session.ChatID
+	}
+	t.mu.Unlock()
+	if chatID != 0 {
+		t.execTrackOff(ctx, b, chatID)
+	}
+}
+
+func (t *Tracker) cbTrackOffCancel(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
+	t.answerCallback(ctx, b, cq)
 	if cq.Message.Message != nil {
 		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
 			ChatID:    cq.Message.Message.Chat.ID,

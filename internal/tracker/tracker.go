@@ -359,6 +359,8 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "area", bot.MatchTypeExact, t.cbArea)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "area_off", bot.MatchTypeExact, t.cbAreaOff)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset", bot.MatchTypeExact, t.cbSessionReset)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "track_off_confirm", bot.MatchTypeExact, t.cbTrackOffConfirm)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "track_off_cancel", bot.MatchTypeExact, t.cbTrackOffCancel)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset_confirm", bot.MatchTypeExact, t.cbSessionResetConfirm)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset_wipe", bot.MatchTypeExact, t.cbSessionResetWipe)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset_cancel", bot.MatchTypeExact, t.cbSessionResetCancel)
@@ -440,7 +442,7 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			}
 		case "⏹ Стоп":
 			if t.requireSession(ctx, b, chatID) {
-				t.execTrackOff(ctx, b, chatID)
+				t.askTrackOffConfirm(ctx, b, chatID)
 			}
 		case "📋 Список":
 			if t.requireSession(ctx, b, chatID) {
