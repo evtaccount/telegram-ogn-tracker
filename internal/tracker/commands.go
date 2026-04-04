@@ -1096,11 +1096,12 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 		info.LastUpdate = time.Time{}
 	}
 	s.SummaryMsgID = 0
+	s.ChatID = chatID
+	// Set filter before enabling tracking so updateFilter doesn't restart goroutines.
+	t.updateFilter()
 	s.TrackingOn = true
 	s.StopCh = make(chan struct{})
 	stopCh := s.StopCh
-	t.updateFilter()
-	s.ChatID = chatID
 	kb := s.replyKeyboard()
 	t.saveState()
 	count := len(s.Tracking)

@@ -12,3 +12,11 @@
 - Если сессия есть, но пуста → ответить "Сессия уже активна"
 
 Так же нужен `/start_session` для явного создания свежей сессии.
+
+## 2026-04-04: OGN клиент не подключается после execTrackOn
+
+**Проблема:** `execTrackOn` ставил `TrackingOn = true` → вызывал `updateFilter()` → тот видел `TrackingOn == true` и вызывал `Disconnect()` → `killed = true` навсегда → `runClient` запускался, но `Run()` видел `killed` и возвращал nil → бесконечный цикл без подключения.
+
+**Решение:**
+1. В `execTrackOn`: вызывать `updateFilter()` ДО `s.TrackingOn = true`, чтобы filter обновился без Disconnect
+2. В `updateFilter`: при `TrackingOn == true` — полный перезапуск горутин (close StopCh + Disconnect + новые горутины), чтобы mid-tracking обновления фильтра работали корректно
