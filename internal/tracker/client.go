@@ -14,12 +14,14 @@ import (
 	"ogn/parser"
 )
 
-// Пороговые значения для детекции посадки и устаревания данных.
 const (
 	staleThreshold         = 5 * time.Minute  // данные старше этого помечаются предупреждением
 	landingSpeedThreshold  = 5.0              // km/h — ниже скорости пешехода, отсекает GPS-шум
 	landingClimbThreshold  = 0.3              // m/s — любой термик даёт > 0.3 м/с набора
 	landingConfirmDuration = 90 * time.Second // сколько пилот должен быть неподвижен для подтверждения посадки
+	updateInterval         = 30 * time.Second // интервал обновления сводки и live-локаций
+	liveLocationPeriod     = 86400            // секунды жизни live-локации в Telegram (24ч)
+	reconnectDelay         = 5 * time.Second  // задержка перед переподключением к OGN APRS
 )
 
 // landingEvent captures data for a landing alert sent outside the mutex.
@@ -120,7 +122,7 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 				return
 			default:
 				log.Printf("OGN client error: %v", err)
-				time.Sleep(5 * time.Second)
+				time.Sleep(reconnectDelay)
 			}
 		}
 	}
@@ -187,21 +189,9 @@ func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinat
 		text += " — " + info.Name
 	} else if info.Username != "" {
 		text += " — " + info.Username
-	} else if info.AutoDiscovered && t.devices != nil {
-		if dev, ok := t.devices[id]; ok {
-			var parts []string
-			if dev.AircraftModel != "" {
-				parts = append(parts, dev.AircraftModel)
-			}
-			if dev.Registration != "" {
-				parts = append(parts, dev.Registration)
-			}
-			if dev.CN != "" {
-				parts = append(parts, "CN:"+dev.CN)
-			}
-			if len(parts) > 0 {
-				text += " — " + strings.Join(parts, " | ")
-			}
+	} else if info.AutoDiscovered {
+		if ddb := formatDDBInfo(t.devices, id); ddb != "" {
+			text += " — " + ddb
 		}
 		if name, ok := aircraftTypes[pos.AircraftType]; ok && pos.AircraftType > 0 {
 			text += " [" + name + "]"
@@ -407,7 +397,7 @@ func (t *Tracker) buildSummary(local map[string]*TrackInfo, landing *Coordinates
 // sendUpdates runs a 30-second ticker that updates live locations on the map
 // and edits (or sends) the pinned summary message in the group chat.
 func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(updateInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -479,7 +469,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 					ChatID:     chatID,
 					Latitude:   info.Position.Latitude,
 					Longitude:  info.Position.Longitude,
-					LivePeriod: 86400,
+					LivePeriod: liveLocationPeriod,
 				}
 				if heading > 0 {
 					sendParams.Heading = heading

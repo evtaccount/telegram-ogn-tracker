@@ -12,6 +12,13 @@ import (
 	"github.com/go-telegram/bot/models"
 )
 
+const (
+	defaultAreaRadius = 100           // км по умолчанию для /area
+	maxAreaRadius     = 500           // максимальный радиус зоны
+	waitTimeout       = 2 * time.Minute // таймаут ожидания локации/водителя
+	driverReminder    = 2 * time.Minute // напоминание водителю
+)
+
 // isTrusted checks whether a Telegram user is allowed to interact with the bot.
 // Currently allows all users; will be restricted when multi-group support is added.
 func (t *Tracker) isTrusted(userID int64) bool {
@@ -46,6 +53,12 @@ func (t *Tracker) requireSession(ctx context.Context, b *bot.Bot, chatID int64) 
 		}
 	}
 	return active
+}
+
+// requireGroupSession combines requireGroupChat + requireSession guards.
+// Returns true if the command can proceed.
+func (t *Tracker) requireGroupSession(ctx context.Context, b *bot.Bot, m *models.Message) bool {
+	return t.requireGroupChat(ctx, b, m) && t.requireSession(ctx, b, m.Chat.ID)
 }
 
 // --- Command handlers ---
@@ -158,10 +171,7 @@ func (t *Tracker) cmdSessionReset(ctx context.Context, b *bot.Bot, update *model
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
-	if !t.requireGroupChat(ctx, b, m) {
-		return
-	}
-	if !t.requireSession(ctx, b, m.Chat.ID) {
+	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
 	t.askSessionResetConfirm(ctx, b, m.Chat.ID)
@@ -301,24 +311,9 @@ func (t *Tracker) execAddDirect(ctx context.Context, b *bot.Bot, m *models.Messa
 	}
 	t.updateFilter()
 
-	// DDB lookup for device info.
 	var ddbInfo string
-	if t.devices != nil {
-		if dev, ok := t.devices[id]; ok {
-			var parts []string
-			if dev.AircraftModel != "" {
-				parts = append(parts, dev.AircraftModel)
-			}
-			if dev.Registration != "" {
-				parts = append(parts, dev.Registration)
-			}
-			if dev.CN != "" {
-				parts = append(parts, "CN:"+dev.CN)
-			}
-			if len(parts) > 0 {
-				ddbInfo = "\n📋 " + strings.Join(parts, " | ")
-			}
-		}
+	if info := formatDDBInfo(t.devices, id); info != "" {
+		ddbInfo = "\n📋 " + info
 	}
 	kb := s.replyKeyboard()
 	t.saveState()
@@ -384,10 +379,7 @@ func (t *Tracker) cmdTrackOn(ctx context.Context, b *bot.Bot, update *models.Upd
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
-	if !t.requireGroupChat(ctx, b, m) {
-		return
-	}
-	if !t.requireSession(ctx, b, m.Chat.ID) {
+	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
 	t.execTrackOn(ctx, b, m.Chat.ID)
@@ -398,10 +390,7 @@ func (t *Tracker) cmdTrackOff(ctx context.Context, b *bot.Bot, update *models.Up
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
-	if !t.requireGroupChat(ctx, b, m) {
-		return
-	}
-	if !t.requireSession(ctx, b, m.Chat.ID) {
+	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
 	t.askTrackOffConfirm(ctx, b, m.Chat.ID)
@@ -412,10 +401,7 @@ func (t *Tracker) cmdList(ctx context.Context, b *bot.Bot, update *models.Update
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
-	if !t.requireGroupChat(ctx, b, m) {
-		return
-	}
-	if !t.requireSession(ctx, b, m.Chat.ID) {
+	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
 	t.execList(ctx, b, m.Chat.ID)
@@ -460,10 +446,7 @@ func (t *Tracker) cmdLanding(ctx context.Context, b *bot.Bot, update *models.Upd
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
-	if !t.requireGroupChat(ctx, b, m) {
-		return
-	}
-	if !t.requireSession(ctx, b, m.Chat.ID) {
+	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
 	t.execLanding(ctx, b, m.Chat.ID)
@@ -725,7 +708,7 @@ func (t *Tracker) cmdHelp(ctx context.Context, b *bot.Bot, update *models.Update
 	}
 }
 
-// cmdDebugWipe полностью очищает все данные бота. TODO: удалить после отладки.
+// cmdDebugWipe полностью очищает все данные бота (для отладки).
 func (t *Tracker) cmdDebugWipe(ctx context.Context, b *bot.Bot, update *models.Update) {
 	m := update.Message
 	if m.From == nil || !t.isTrusted(m.From.ID) {
@@ -740,8 +723,6 @@ func (t *Tracker) cmdDebugWipe(ctx context.Context, b *bot.Bot, update *models.U
 	t.users = make(map[int64]*UserInfo)
 	t.saveState()
 	t.mu.Unlock()
-
-	clearStateFile()
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: m.Chat.ID,
@@ -867,10 +848,7 @@ func (t *Tracker) cmdDriver(ctx context.Context, b *bot.Bot, update *models.Upda
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
-	if !t.requireGroupChat(ctx, b, m) {
-		return
-	}
-	if !t.requireSession(ctx, b, m.Chat.ID) {
+	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
 	t.execDriver(ctx, b, m.Chat.ID, m.From.ID, m.From.Username)
@@ -892,15 +870,12 @@ func (t *Tracker) cmdArea(ctx context.Context, b *bot.Bot, update *models.Update
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
-	if !t.requireGroupChat(ctx, b, m) {
+	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
-	if !t.requireSession(ctx, b, m.Chat.ID) {
-		return
-	}
-	radius := 100
+	radius := defaultAreaRadius
 	if arg := commandArgs(m.Text); arg != "" {
-		if r, err := strconv.Atoi(arg); err == nil && r > 0 && r <= 500 {
+		if r, err := strconv.Atoi(arg); err == nil && r > 0 && r <= maxAreaRadius {
 			radius = r
 		}
 	}
@@ -1117,19 +1092,8 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 		if info.Status == StatusPickedUp {
 			entry += " (забран)"
 		}
-		if t.devices != nil {
-			if dev, ok := t.devices[id]; ok {
-				var parts []string
-				if dev.AircraftModel != "" {
-					parts = append(parts, dev.AircraftModel)
-				}
-				if dev.Registration != "" {
-					parts = append(parts, dev.Registration)
-				}
-				if len(parts) > 0 {
-					entry += " [" + strings.Join(parts, ", ") + "]"
-				}
-			}
+		if info := formatDDBInfo(t.devices, id); info != "" {
+			entry += " [" + info + "]"
 		}
 		entries = append(entries, entry)
 	}
@@ -1170,7 +1134,7 @@ func (t *Tracker) execLanding(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Lock()
 	s := t.session
 	s.WaitingLanding = true
-	s.LandingExpiry = time.Now().Add(2 * time.Minute)
+	s.LandingExpiry = time.Now().Add(waitTimeout)
 	s.ChatID = chatID
 	t.mu.Unlock()
 
@@ -1186,7 +1150,7 @@ func (t *Tracker) execArea(ctx context.Context, b *bot.Bot, chatID int64, radius
 	t.mu.Lock()
 	s := t.session
 	s.WaitingArea = true
-	s.AreaExpiry = time.Now().Add(2 * time.Minute)
+	s.AreaExpiry = time.Now().Add(waitTimeout)
 	s.TrackAreaRadius = radiusKm
 	s.ChatID = chatID
 	t.mu.Unlock()
@@ -1247,7 +1211,7 @@ func (t *Tracker) execDriver(ctx context.Context, b *bot.Bot, chatID int64, user
 	}
 	s.Drivers[userID] = &DriverInfo{
 		Waiting: true,
-		Expiry:  time.Now().Add(2 * time.Minute),
+		Expiry:  time.Now().Add(waitTimeout),
 		WaitGen: gen,
 	}
 	s.ChatID = chatID
@@ -1267,7 +1231,7 @@ func (t *Tracker) execDriver(ctx context.Context, b *bot.Bot, chatID int64, user
 // driverWaitTimeout sends a reminder after 2 minutes and cleans up after 4 minutes
 // if the driver hasn't sent a live location. Uses WaitGen to avoid acting on stale requests.
 func (t *Tracker) driverWaitTimeout(gen int, userID int64, chatID int64, username string) {
-	time.Sleep(2 * time.Minute)
+	time.Sleep(driverReminder)
 
 	t.mu.Lock()
 	if t.session == nil {
@@ -1279,7 +1243,7 @@ func (t *Tracker) driverWaitTimeout(gen int, userID int64, chatID int64, usernam
 		t.mu.Unlock()
 		return
 	}
-	d.Expiry = time.Now().Add(2 * time.Minute)
+	d.Expiry = time.Now().Add(waitTimeout)
 	b := t.bot
 	t.mu.Unlock()
 
@@ -1304,7 +1268,7 @@ func (t *Tracker) driverWaitTimeout(gen int, userID int64, chatID int64, usernam
 		log.Printf("failed to send driver reminder: %v", err)
 	}
 
-	time.Sleep(2 * time.Minute)
+	time.Sleep(driverReminder)
 
 	t.mu.Lock()
 	if t.session == nil {
@@ -1382,8 +1346,6 @@ func (t *Tracker) execPickup(ctx context.Context, b *bot.Bot, id string) {
 }
 
 // --- Callback query handlers for inline buttons ---
-// Callback handlers (cb*) are thin wrappers: they answer the callback query,
-// check trust, resolve chatID, and delegate to the corresponding exec* function.
 
 // answerCallback acknowledges a callback query to remove the loading spinner in Telegram.
 func (t *Tracker) answerCallback(ctx context.Context, b *bot.Bot, cq *models.CallbackQuery) {
@@ -1394,64 +1356,79 @@ func (t *Tracker) answerCallback(ctx context.Context, b *bot.Bot, cq *models.Cal
 	}
 }
 
-func (t *Tracker) cbTrackOn(ctx context.Context, b *bot.Bot, update *models.Update) {
+// sessionChatID returns the current session's chat ID (0 if no session).
+// Must be called with t.mu held.
+func (t *Tracker) sessionChatID() int64 {
+	if t.session != nil {
+		return t.session.ChatID
+	}
+	return 0
+}
+
+// deleteCallbackMessage removes the inline-button message that triggered the callback.
+func deleteCallbackMessage(ctx context.Context, b *bot.Bot, cq *models.CallbackQuery) {
+	if cq.Message.Message != nil {
+		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
+			ChatID:    cq.Message.Message.Chat.ID,
+			MessageID: cq.Message.Message.ID,
+		})
+	}
+}
+
+// handleCallback is the common wrapper for callback handlers:
+// answer the query, check trust, resolve session chatID, and call fn.
+func (t *Tracker) handleCallback(ctx context.Context, b *bot.Bot, update *models.Update, fn func(int64)) {
 	cq := update.CallbackQuery
 	t.answerCallback(ctx, b, cq)
 	if !t.isTrusted(cq.From.ID) {
 		return
 	}
 	t.mu.Lock()
-	chatID := int64(0)
-	if t.session != nil {
-		chatID = t.session.ChatID
-	}
+	chatID := t.sessionChatID()
 	t.mu.Unlock()
-	t.execTrackOn(ctx, b, chatID)
+	if chatID != 0 {
+		fn(chatID)
+	}
+}
+
+// handleCallbackWithDelete is like handleCallback but also deletes the prompt message.
+func (t *Tracker) handleCallbackWithDelete(ctx context.Context, b *bot.Bot, update *models.Update, fn func(int64)) {
+	cq := update.CallbackQuery
+	t.answerCallback(ctx, b, cq)
+	if !t.isTrusted(cq.From.ID) {
+		return
+	}
+	deleteCallbackMessage(ctx, b, cq)
+	t.mu.Lock()
+	chatID := t.sessionChatID()
+	t.mu.Unlock()
+	if chatID != 0 {
+		fn(chatID)
+	}
+}
+
+func (t *Tracker) cbTrackOn(ctx context.Context, b *bot.Bot, update *models.Update) {
+	t.handleCallback(ctx, b, update, func(chatID int64) {
+		t.execTrackOn(ctx, b, chatID)
+	})
 }
 
 func (t *Tracker) cbTrackOff(ctx context.Context, b *bot.Bot, update *models.Update) {
-	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
-	if !t.isTrusted(cq.From.ID) {
-		return
-	}
-	t.mu.Lock()
-	chatID := int64(0)
-	if t.session != nil {
-		chatID = t.session.ChatID
-	}
-	t.mu.Unlock()
-	t.askTrackOffConfirm(ctx, b, chatID)
+	t.handleCallback(ctx, b, update, func(chatID int64) {
+		t.askTrackOffConfirm(ctx, b, chatID)
+	})
 }
 
 func (t *Tracker) cbList(ctx context.Context, b *bot.Bot, update *models.Update) {
-	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
-	if !t.isTrusted(cq.From.ID) {
-		return
-	}
-	t.mu.Lock()
-	chatID := int64(0)
-	if t.session != nil {
-		chatID = t.session.ChatID
-	}
-	t.mu.Unlock()
-	t.execList(ctx, b, chatID)
+	t.handleCallback(ctx, b, update, func(chatID int64) {
+		t.execList(ctx, b, chatID)
+	})
 }
 
 func (t *Tracker) cbLanding(ctx context.Context, b *bot.Bot, update *models.Update) {
-	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
-	if !t.isTrusted(cq.From.ID) {
-		return
-	}
-	t.mu.Lock()
-	chatID := int64(0)
-	if t.session != nil {
-		chatID = t.session.ChatID
-	}
-	t.mu.Unlock()
-	t.execLanding(ctx, b, chatID)
+	t.handleCallback(ctx, b, update, func(chatID int64) {
+		t.execLanding(ctx, b, chatID)
+	})
 }
 
 func (t *Tracker) cbDriver(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -1461,12 +1438,11 @@ func (t *Tracker) cbDriver(ctx context.Context, b *bot.Bot, update *models.Updat
 		return
 	}
 	t.mu.Lock()
-	chatID := int64(0)
-	if t.session != nil {
-		chatID = t.session.ChatID
-	}
+	chatID := t.sessionChatID()
 	t.mu.Unlock()
-	t.execDriver(ctx, b, chatID, cq.From.ID, cq.From.Username)
+	if chatID != 0 {
+		t.execDriver(ctx, b, chatID, cq.From.ID, cq.From.Username)
+	}
 }
 
 func (t *Tracker) cbDriverOff(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -1476,12 +1452,11 @@ func (t *Tracker) cbDriverOff(ctx context.Context, b *bot.Bot, update *models.Up
 		return
 	}
 	t.mu.Lock()
-	chatID := int64(0)
-	if t.session != nil {
-		chatID = t.session.ChatID
-	}
+	chatID := t.sessionChatID()
 	t.mu.Unlock()
-	t.execDriverOff(ctx, b, chatID, cq.From.ID)
+	if chatID != 0 {
+		t.execDriverOff(ctx, b, chatID, cq.From.ID)
+	}
 }
 
 func (t *Tracker) cbArea(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -1491,164 +1466,63 @@ func (t *Tracker) cbArea(ctx context.Context, b *bot.Bot, update *models.Update)
 		return
 	}
 	t.mu.Lock()
-	chatID := int64(0)
-	radius := 100
-	if t.session != nil {
-		chatID = t.session.ChatID
+	chatID := t.sessionChatID()
+	radius := defaultAreaRadius
+	if t.session != nil && t.session.TrackAreaRadius > 0 {
 		radius = t.session.TrackAreaRadius
 	}
 	t.mu.Unlock()
-	if radius == 0 {
-		radius = 100
+	if chatID != 0 {
+		t.execArea(ctx, b, chatID, radius)
 	}
-	t.execArea(ctx, b, chatID, radius)
 }
 
 func (t *Tracker) cbAreaOff(ctx context.Context, b *bot.Bot, update *models.Update) {
-	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
-	if !t.isTrusted(cq.From.ID) {
-		return
-	}
-	t.mu.Lock()
-	chatID := int64(0)
-	if t.session != nil {
-		chatID = t.session.ChatID
-	}
-	t.mu.Unlock()
-	t.execAreaOff(ctx, b, chatID)
+	t.handleCallback(ctx, b, update, func(chatID int64) {
+		t.execAreaOff(ctx, b, chatID)
+	})
 }
 
 func (t *Tracker) cbSessionReset(ctx context.Context, b *bot.Bot, update *models.Update) {
-	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
-	if !t.isTrusted(cq.From.ID) {
-		return
-	}
-	t.mu.Lock()
-	chatID := int64(0)
-	if t.session != nil {
-		chatID = t.session.ChatID
-	}
-	t.mu.Unlock()
-	if chatID != 0 {
+	t.handleCallback(ctx, b, update, func(chatID int64) {
 		t.askSessionResetConfirm(ctx, b, chatID)
-	}
+	})
 }
 
 func (t *Tracker) cbSessionResetConfirm(ctx context.Context, b *bot.Bot, update *models.Update) {
-	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
-	if !t.isTrusted(cq.From.ID) {
-		return
-	}
-	// Remove the confirmation message.
-	if cq.Message.Message != nil {
-		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
-			ChatID:    cq.Message.Message.Chat.ID,
-			MessageID: cq.Message.Message.ID,
-		})
-	}
-	t.mu.Lock()
-	chatID := int64(0)
-	if t.session != nil {
-		chatID = t.session.ChatID
-	}
-	t.mu.Unlock()
-	if chatID != 0 {
+	t.handleCallbackWithDelete(ctx, b, update, func(chatID int64) {
 		t.execSessionReset(ctx, b, chatID, false)
-	}
+	})
 }
 
 func (t *Tracker) cbSessionResetWipe(ctx context.Context, b *bot.Bot, update *models.Update) {
-	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
-	if !t.isTrusted(cq.From.ID) {
-		return
-	}
-	if cq.Message.Message != nil {
-		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
-			ChatID:    cq.Message.Message.Chat.ID,
-			MessageID: cq.Message.Message.ID,
-		})
-	}
-	t.mu.Lock()
-	chatID := int64(0)
-	if t.session != nil {
-		chatID = t.session.ChatID
-	}
-	t.mu.Unlock()
-	if chatID != 0 {
+	t.handleCallbackWithDelete(ctx, b, update, func(chatID int64) {
 		t.execSessionReset(ctx, b, chatID, true)
-	}
+	})
 }
 
 func (t *Tracker) cbSessionResetCancel(ctx context.Context, b *bot.Bot, update *models.Update) {
 	cq := update.CallbackQuery
 	t.answerCallback(ctx, b, cq)
-	if cq.Message.Message != nil {
-		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
-			ChatID:    cq.Message.Message.Chat.ID,
-			MessageID: cq.Message.Message.ID,
-		})
-	}
+	deleteCallbackMessage(ctx, b, cq)
 }
 
 func (t *Tracker) cbTrackOffConfirm(ctx context.Context, b *bot.Bot, update *models.Update) {
-	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
-	if !t.isTrusted(cq.From.ID) {
-		return
-	}
-	if cq.Message.Message != nil {
-		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
-			ChatID:    cq.Message.Message.Chat.ID,
-			MessageID: cq.Message.Message.ID,
-		})
-	}
-	t.mu.Lock()
-	chatID := int64(0)
-	if t.session != nil {
-		chatID = t.session.ChatID
-	}
-	t.mu.Unlock()
-	if chatID != 0 {
+	t.handleCallbackWithDelete(ctx, b, update, func(chatID int64) {
 		t.execTrackOff(ctx, b, chatID)
-	}
+	})
 }
 
 func (t *Tracker) cbTrackOffCancel(ctx context.Context, b *bot.Bot, update *models.Update) {
 	cq := update.CallbackQuery
 	t.answerCallback(ctx, b, cq)
-	if cq.Message.Message != nil {
-		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
-			ChatID:    cq.Message.Message.Chat.ID,
-			MessageID: cq.Message.Message.ID,
-		})
-	}
+	deleteCallbackMessage(ctx, b, cq)
 }
 
 func (t *Tracker) cbStartResume(ctx context.Context, b *bot.Bot, update *models.Update) {
-	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
-	if !t.isTrusted(cq.From.ID) {
-		return
-	}
-	if cq.Message.Message != nil {
-		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
-			ChatID:    cq.Message.Message.Chat.ID,
-			MessageID: cq.Message.Message.ID,
-		})
-	}
-	t.mu.Lock()
-	chatID := int64(0)
-	if t.session != nil {
-		chatID = t.session.ChatID
-	}
-	t.mu.Unlock()
-	if chatID != 0 {
+	t.handleCallbackWithDelete(ctx, b, update, func(chatID int64) {
 		t.execTrackOn(ctx, b, chatID)
-	}
+	})
 }
 
 func (t *Tracker) cbStartFresh(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -1657,16 +1531,10 @@ func (t *Tracker) cbStartFresh(ctx context.Context, b *bot.Bot, update *models.U
 	if !t.isTrusted(cq.From.ID) {
 		return
 	}
-	if cq.Message.Message != nil {
-		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
-			ChatID:    cq.Message.Message.Chat.ID,
-			MessageID: cq.Message.Message.ID,
-		})
-	}
+	deleteCallbackMessage(ctx, b, cq)
 	t.mu.Lock()
-	chatID := int64(0)
+	chatID := t.sessionChatID()
 	if t.session != nil {
-		chatID = t.session.ChatID
 		t.session.stopTracking(t.aprs)
 	}
 	t.session = &GroupSession{

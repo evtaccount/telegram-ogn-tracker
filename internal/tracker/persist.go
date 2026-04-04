@@ -232,9 +232,3 @@ func (t *Tracker) loadState() bool {
 	return ss.TrackingOn
 }
 
-// clearStateFile removes the session file from disk.
-func clearStateFile() {
-	if err := os.Remove(sessionFile); err != nil && !os.IsNotExist(err) {
-		log.Printf("failed to remove session file: %v", err)
-	}
-}

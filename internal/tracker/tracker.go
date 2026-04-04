@@ -178,6 +178,32 @@ type Tracker struct {
 	resumeOnStart bool // флаг авто-возобновления трекинга после перезапуска
 }
 
+// formatDDBInfo returns a human-readable summary of the OGN DDB entry for a device,
+// e.g. "ASG 29 | D-1234 | CN:AB". Returns "" if unknown.
+func formatDDBInfo(devices map[string]ddb.Device, id string) string {
+	if devices == nil {
+		return ""
+	}
+	dev, ok := devices[id]
+	if !ok {
+		return ""
+	}
+	var parts []string
+	if dev.AircraftModel != "" {
+		parts = append(parts, dev.AircraftModel)
+	}
+	if dev.Registration != "" {
+		parts = append(parts, dev.Registration)
+	}
+	if dev.CN != "" {
+		parts = append(parts, "CN:"+dev.CN)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " | ")
+}
+
 // aircraftTypes maps OGN aircraft type codes to human-readable names.
 var aircraftTypes = map[int]string{
 	0: "Unknown", 1: "Glider", 2: "Tow plane", 3: "Helicopter",
@@ -485,7 +511,7 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			}
 		case "📡 Зона":
 			if t.requireSession(ctx, b, chatID) {
-				t.execArea(ctx, b, chatID, 100)
+				t.execArea(ctx, b, chatID, defaultAreaRadius)
 			}
 		case "📡 Зона ✕":
 			if t.requireSession(ctx, b, chatID) {
