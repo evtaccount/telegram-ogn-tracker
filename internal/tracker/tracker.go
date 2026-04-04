@@ -113,16 +113,16 @@ func distanceAndBearing(lat1, lon1, lat2, lon2 float64) (distKm float64, bearing
 	return ruler.Distance(a, b) / 1000, ruler.Bearing(a, b)
 }
 
-func bearingEmoji(deg float64) string {
+func bearingName(deg float64) string {
 	deg = math.Mod(deg+360, 360)
-	arrows := []string{"⬆️", "↗️", "➡️", "↘️", "⬇️", "↙️", "⬅️", "↖️"}
+	names := []string{"N", "NE", "E", "SE", "S", "SW", "W", "NW"}
 	idx := int(math.Round(deg/45)) % 8
-	return arrows[idx]
+	return names[idx]
 }
 
 func formatBearing(deg float64) string {
 	deg = math.Mod(deg+360, 360)
-	return fmt.Sprintf("%s %03.0f°", bearingEmoji(deg), deg)
+	return fmt.Sprintf("(%.0f° | %s)", deg, bearingName(deg))
 }
 
 // formatTime formats a time value using the tracker's timezone.

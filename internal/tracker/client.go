@@ -129,7 +129,7 @@ func (t *Tracker) sendLandingAlert(e *landingEvent, chatID int64) {
 		label = e.name
 	}
 	text := fmt.Sprintf("🪂 %s сел!", label)
-	text += fmt.Sprintf("\n⬆️ %.0fм  ⏱ %s", e.alt, e.time.In(e.tz).Format("15:04:05"))
+	text += fmt.Sprintf("\nВысота: %.0fм  ⏱ %s", e.alt, e.time.In(e.tz).Format("15:04:05"))
 
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -207,16 +207,16 @@ func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinat
 		return text
 	}
 
-	// Flight data line.
-	text += fmt.Sprintf("\n⬆️ %.0fм", pos.Altitude)
+	// Flight data lines.
+	altLine := fmt.Sprintf("\nВысота: %.0fм", pos.Altitude)
 	if pos.ClimbRate != 0 {
-		text += fmt.Sprintf("  %+.1fм/с", pos.ClimbRate)
+		altLine += fmt.Sprintf(" (%+.1fм/с)", pos.ClimbRate)
 	}
-	if pos.GroundSpeed > 0 {
-		text += fmt.Sprintf("  %.0fкм/ч", pos.GroundSpeed)
-	}
-	if pos.Course > 0 || pos.GroundSpeed > 0 {
-		text += "  " + formatBearing(float64(pos.Course))
+	text += altLine
+	if pos.GroundSpeed > 0 || pos.Course > 0 {
+		spdLine := fmt.Sprintf("\nСкорость: %.0fкм/ч", pos.GroundSpeed)
+		spdLine += "  Курс: " + formatBearing(float64(pos.Course))
+		text += spdLine
 	}
 
 	// Distance and bearing to landing.
