@@ -369,6 +369,7 @@ func NewTracker() *Tracker {
 		aprs:  client.New("N0CALL", ""),
 		users: make(map[int64]*UserInfo),
 	}
+	t.aprs.Logger = log.Default()
 
 	// Restore previous session.
 	t.mu.Lock()

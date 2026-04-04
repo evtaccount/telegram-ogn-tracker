@@ -48,12 +48,22 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 		}
 
 		err := t.aprs.Run(func(line string) {
+			log.Printf("[OGN line] %s", line)
 			msg, err := parser.ParsePosition(line)
 			if err != nil {
 				return
 			}
 			origID := msg.Callsign
 			id := shortID(origID)
+
+			log.Printf("[OGN raw] callsign=%s dst=%s receiver=%s relay=%s ts=%s lat=%.5f lon=%.5f alt=%.0f crs=%d spd=%.1f climb=%.1f turn=%.1f snr=%.1f err=%d foff=%.1f gps=%s fl=%.0f pwr=%.1f sw=%.1f hw=%d addr=%s atype=%d real=%s stealth=%v notrack=%v comment=%q",
+				msg.Callsign, msg.DstCall, msg.ReceiverName, msg.Relay,
+				msg.Timestamp.Format("15:04:05"), msg.Latitude, msg.Longitude,
+				msg.Altitude, msg.Course, msg.GroundSpeed, msg.ClimbRate,
+				msg.TurnRate, msg.SignalQuality, msg.ErrorCount, msg.FreqOffset,
+				msg.GPSQuality, msg.FlightLevel, msg.SignalPower, msg.SoftwareVer,
+				msg.HardwareVer, msg.Address, msg.AircraftType, msg.RealAddress,
+				msg.Stealth, msg.NoTracking, msg.UserComment)
 
 			var alert *landingEvent
 
