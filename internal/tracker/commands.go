@@ -23,7 +23,7 @@ func (t *Tracker) requireSession(ctx context.Context, b *bot.Bot, chatID int64) 
 	if !active {
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "Run /start first",
+			Text:   "Сначала выполните /start",
 		}); err != nil {
 			log.Printf("failed to send session required message: %v", err)
 		}
@@ -56,7 +56,7 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: m.Chat.ID,
-		Text:   "Session started. Use /add <id> or /area to start tracking.",
+		Text:   "Сессия начата. Используйте /add <id> или /area.",
 		ReplyMarkup: &models.ReplyKeyboardRemove{
 			RemoveKeyboard: true,
 		},
@@ -93,7 +93,7 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 	if len(args) == 0 {
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: m.Chat.ID,
-			Text:   "Usage: /add <ogn_id> [name]",
+			Text:   "Использование: /add <ogn_id> [имя]",
 		}); err != nil {
 			log.Printf("failed to send usage: %v", err)
 		}
@@ -138,11 +138,11 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 			}
 		}
 	}
-	kb := t.keyboard()
+	kb := t.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
-	text := "Added " + id
+	text := "Добавлен " + id
 	if display != "" {
 		text += " (" + display + ")"
 	}
@@ -170,7 +170,7 @@ func (t *Tracker) cmdRemove(ctx context.Context, b *bot.Bot, update *models.Upda
 	if args == "" {
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: m.Chat.ID,
-			Text:   "Usage: /remove <ogn_id>",
+			Text:   "Использование: /remove <ogn_id>",
 		}); err != nil {
 			log.Printf("failed to send usage: %v", err)
 		}
@@ -183,13 +183,13 @@ func (t *Tracker) cmdRemove(ctx context.Context, b *bot.Bot, update *models.Upda
 	t.chatID = m.Chat.ID
 	delete(t.tracking, id)
 	t.updateFilter()
-	kb := t.keyboard()
+	kb := t.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      m.Chat.ID,
-		Text:        "Removed " + id,
+		Text:        "Удалён " + id,
 		ReplyMarkup: kb,
 	}); err != nil {
 		log.Printf("failed to confirm remove: %v", err)
@@ -236,15 +236,15 @@ func (t *Tracker) cmdStatus(ctx context.Context, b *bot.Bot, update *models.Upda
 	}
 
 	t.mu.Lock()
-	status := "disabled"
+	status := "выкл"
 	if t.trackingOn {
-		status = "enabled"
+		status = "вкл"
 	}
 	count := len(t.tracking)
-	kb := t.keyboard()
+	kb := t.replyKeyboard()
 	t.mu.Unlock()
 
-	text := fmt.Sprintf("Tracking %s. %d address(es) added.", status, count)
+	text := fmt.Sprintf("Трекинг %s. Адресов: %d.", status, count)
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      m.Chat.ID,
 		Text:        text,
@@ -281,7 +281,7 @@ func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) 
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: m.Chat.ID,
-			Text:   fmt.Sprintf("Current timezone: %s\nUsage: /tz Europe/Kyiv", cur),
+			Text:   fmt.Sprintf("Часовой пояс: %s\nИспользование: /tz Europe/Kyiv", cur),
 		}); err != nil {
 			log.Printf("failed to send tz usage: %v", err)
 		}
@@ -292,7 +292,7 @@ func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) 
 	if err != nil {
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: m.Chat.ID,
-			Text:   "Unknown timezone. Use IANA format, e.g. Europe/Kyiv, America/New_York, Asia/Tokyo",
+			Text:   "Неизвестный часовой пояс. Используйте формат IANA, например: Europe/Kyiv, America/New_York, Asia/Tokyo",
 		}); err != nil {
 			log.Printf("failed to send tz error: %v", err)
 		}
@@ -308,7 +308,7 @@ func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) 
 	now := time.Now().In(loc).Format("15:04:05")
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: m.Chat.ID,
-		Text:   fmt.Sprintf("Timezone set to %s (now: %s)", loc.String(), now),
+		Text:   fmt.Sprintf("Часовой пояс: %s (сейчас: %s)", loc.String(), now),
 	}); err != nil {
 		log.Printf("failed to confirm tz: %v", err)
 	}
@@ -321,21 +321,21 @@ func (t *Tracker) cmdHelp(ctx context.Context, b *bot.Bot, update *models.Update
 	}
 
 	text := strings.Join([]string{
-		"/start — start or reset the bot",
-		"/add <id> [name] — track an OGN address",
-		"/remove <id> — stop tracking",
-		"/track_on — enable live tracking",
-		"/track_off — disable tracking",
-		"/landing — set landing location",
-		"/driver — become the driver (share live location)",
-		"/driver_off — stop being the driver",
-		"/area [radius] — track all aircraft in area (default 100km)",
-		"/area_off — disable area tracking",
-		"/tz [zone] — set timezone (e.g. Europe/Kyiv)",
-		"/list — show tracked addresses",
-		"/status — show current state",
-		"/session_reset — stop and clear all",
-		"/help — show this help",
+		"/start — запуск / сброс бота",
+		"/add <id> [имя] — добавить OGN адрес",
+		"/remove <id> — удалить из отслеживания",
+		"/track_on — включить трекинг",
+		"/track_off — выключить трекинг",
+		"/landing — задать точку посадки",
+		"/driver — стать водителем (live-локация)",
+		"/driver_off — перестать быть водителем",
+		"/area [радиус] — зона отслеживания (по умолчанию 100км)",
+		"/area_off — отключить зону",
+		"/tz [зона] — часовой пояс (например Europe/Kyiv)",
+		"/list — список отслеживаемых",
+		"/status — текущее состояние",
+		"/session_reset — остановить и очистить всё",
+		"/help — эта справка",
 	}, "\n")
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: m.Chat.ID,
@@ -357,11 +357,11 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 			d.Pos = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
 			d.MsgID = m.ID
 			d.Waiting = false
-			kb := t.keyboard()
+			kb := t.replyKeyboard()
 			t.mu.Unlock()
 			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 				ChatID:      m.Chat.ID,
-				Text:        "🚗 Driver location active. Distances will appear in the summary.",
+				Text:        "🚗 Водитель активен. Расстояния будут в сводке.",
 				ReplyMarkup: kb,
 			}); err != nil {
 				log.Printf("failed to confirm driver location: %v", err)
@@ -370,7 +370,7 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 		}
 		// Static pin — use as temporary position, keep waiting for live.
 		d.Pos = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
-		kb := t.keyboard()
+		kb := t.replyKeyboard()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:      m.Chat.ID,
@@ -387,12 +387,12 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 		log.Printf("[landing] location set at %.5f,%.5f by user=%d", loc.Latitude, loc.Longitude, m.From.ID)
 		t.landing = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
 		t.waitingLanding = false
-		kb := t.keyboard()
+		kb := t.replyKeyboard()
 		t.saveState()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:      m.Chat.ID,
-			Text:        "Landing location saved",
+			Text:        "Точка посадки сохранена",
 			ReplyMarkup: kb,
 		}); err != nil {
 			log.Printf("failed to confirm landing location: %v", err)
@@ -413,12 +413,12 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 		}
 		t.updateFilter()
 		radius := t.trackAreaRadius
-		kb := t.keyboard()
+		kb := t.replyKeyboard()
 		t.saveState()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:      m.Chat.ID,
-			Text:        fmt.Sprintf("📡 Area tracking active: %dkm radius", radius),
+			Text:        fmt.Sprintf("📡 Зона активна: радиус %dкм", radius),
 			ReplyMarkup: kb,
 		}); err != nil {
 			log.Printf("failed to confirm area location: %v", err)
@@ -493,7 +493,7 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: chatID,
-		Text:   "Session reset. Use /add <id> to start again.",
+		Text:   "Сессия сброшена. Используйте /add <id> для начала.",
 	}); err != nil {
 		log.Printf("failed to send session_reset message: %v", err)
 	}
@@ -505,18 +505,18 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "No addresses added. Use /add <id> or /area first.",
+			Text:   "Нет адресов. Используйте /add <id> или /area.",
 		}); err != nil {
 			log.Printf("failed to send no addresses message: %v", err)
 		}
 		return
 	}
 	if t.trackingOn {
-		kb := t.keyboard()
+		kb := t.replyKeyboard()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:      chatID,
-			Text:        "Tracking already enabled",
+			Text:        "Трекинг уже включён",
 			ReplyMarkup: kb,
 		}); err != nil {
 			log.Printf("failed to confirm track_on: %v", err)
@@ -528,7 +528,7 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	stopCh := t.stopCh
 	t.updateFilter()
 	t.chatID = chatID
-	kb := t.keyboard()
+	kb := t.replyKeyboard()
 	t.saveState()
 	count := len(t.tracking)
 	hasArea := t.trackArea != nil
@@ -540,7 +540,7 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
-		Text:        "Tracking enabled",
+		Text:        "Трекинг включён",
 		ReplyMarkup: kb,
 	}); err != nil {
 		log.Printf("failed to confirm track_on: %v", err)
@@ -550,11 +550,11 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 func (t *Tracker) execTrackOff(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Lock()
 	if !t.trackingOn {
-		kb := t.keyboard()
+		kb := t.replyKeyboard()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:      chatID,
-			Text:        "Tracking already disabled",
+			Text:        "Трекинг уже выключен",
 			ReplyMarkup: kb,
 		}); err != nil {
 			log.Printf("failed to confirm track_off: %v", err)
@@ -562,14 +562,14 @@ func (t *Tracker) execTrackOff(ctx context.Context, b *bot.Bot, chatID int64) {
 		return
 	}
 	t.stopTracking()
-	kb := t.keyboard()
+	kb := t.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 	log.Printf("[tracking] OFF chat=%d", chatID)
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
-		Text:        "Tracking disabled",
+		Text:        "Трекинг выключен",
 		ReplyMarkup: kb,
 	}); err != nil {
 		log.Printf("failed to confirm track_off: %v", err)
@@ -590,10 +590,10 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 			entry += " — " + info.Username
 		}
 		if info.Status == StatusLanded && !info.LandingTime.IsZero() {
-			entry += fmt.Sprintf(" (landed %s)", info.LandingTime.In(t.tz()).Format("15:04"))
+			entry += fmt.Sprintf(" (сел %s)", info.LandingTime.In(t.tz()).Format("15:04"))
 		}
 		if info.Status == StatusPickedUp {
-			entry += " (picked up)"
+			entry += " (забран)"
 		}
 		if t.devices != nil {
 			if dev, ok := t.devices[id]; ok {
@@ -611,9 +611,9 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 		}
 		entries = append(entries, entry)
 	}
-	track := "off"
+	track := "выкл"
 	if t.trackingOn {
-		track = "on"
+		track = "вкл"
 	}
 
 	// Copy tracking map for pilotButtons (still under lock).
@@ -622,27 +622,19 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 		cp := *info
 		localCopy[id] = &cp
 	}
-	kb := t.keyboard()
 	t.mu.Unlock()
 
-	// Merge general keyboard with nav+pickup buttons for landed pilots.
-	navKb := pilotButtons(localCopy)
+	// Only contextual inline buttons (navigate + pickup per pilot).
 	var replyMarkup models.ReplyMarkup
-	if navKb != nil {
-		merged := *navKb
-		if kb != nil {
-			merged.InlineKeyboard = append(merged.InlineKeyboard, kb.InlineKeyboard...)
-		}
-		replyMarkup = &merged
-	} else {
-		replyMarkup = kb
+	if navKb := pilotButtons(localCopy); navKb != nil {
+		replyMarkup = navKb
 	}
 
 	list := strings.Join(entries, "\n")
 	if list == "" {
-		list = "none"
+		list = "нет"
 	}
-	text := "Tracking: " + track + "\n" + list
+	text := "Трекинг: " + track + "\n" + list
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        text,
@@ -661,7 +653,7 @@ func (t *Tracker) execLanding(ctx context.Context, b *bot.Bot, chatID int64) {
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: chatID,
-		Text:   "Send landing location within 2 minutes",
+		Text:   "Отправьте точку посадки в течение 2 минут",
 	}); err != nil {
 		log.Printf("failed to request landing location: %v", err)
 	}
@@ -677,7 +669,7 @@ func (t *Tracker) execArea(ctx context.Context, b *bot.Bot, chatID int64, radius
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: chatID,
-		Text:   fmt.Sprintf("Send a location for the area center (%dkm radius) within 2 minutes", radiusKm),
+		Text:   fmt.Sprintf("Отправьте центр зоны (радиус %dкм) в течение 2 минут", radiusKm),
 	}); err != nil {
 		log.Printf("failed to request area location: %v", err)
 	}
@@ -695,13 +687,13 @@ func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) {
 		}
 	}
 	t.updateFilter()
-	kb := t.keyboard()
+	kb := t.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
-		Text:        "📡 Area tracking disabled",
+		Text:        "📡 Зона отключена",
 		ReplyMarkup: kb,
 	}); err != nil {
 		log.Printf("failed to confirm area off: %v", err)
@@ -711,11 +703,11 @@ func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) {
 func (t *Tracker) execDriver(ctx context.Context, b *bot.Bot, chatID int64, userID int64, username string) {
 	t.mu.Lock()
 	if d, ok := t.drivers[userID]; ok && d.MsgID != 0 {
-		kb := t.keyboard()
+		kb := t.replyKeyboard()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:      chatID,
-			Text:        "🚗 You're already driving. Use /driver_off to stop.",
+			Text:        "🚗 Вы уже водитель. /driver_off чтобы остановить.",
 			ReplyMarkup: kb,
 		}); err != nil {
 			log.Printf("failed to send driver active message: %v", err)
@@ -738,7 +730,7 @@ func (t *Tracker) execDriver(ctx context.Context, b *bot.Bot, chatID int64, user
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: chatID,
-		Text:   "Share your live location within 2 minutes to become the driver.",
+		Text:   "Отправьте live-локацию в течение 2 минут, чтобы стать водителем.",
 	}); err != nil {
 		log.Printf("failed to send driver prompt: %v", err)
 	}
@@ -769,7 +761,7 @@ func (t *Tracker) driverWaitTimeout(gen int, userID int64, chatID int64, usernam
 	} else {
 		mention = fmt.Sprintf(`<a href="tg://user?id=%d">водитель</a>`, userID)
 	}
-	text := fmt.Sprintf("⏰ %s, вы не расшарили локацию. Отправьте live-локацию в течение 2 минут.", mention)
+	text := fmt.Sprintf("⏰ %s, отправьте live-локацию в течение 2 минут.", mention)
 
 	ctx := context.Background()
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -801,12 +793,12 @@ func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, u
 	t.mu.Lock()
 	_, was := t.drivers[userID]
 	delete(t.drivers, userID)
-	kb := t.keyboard()
+	kb := t.replyKeyboard()
 	t.mu.Unlock()
 
-	text := "🚗 You're not driving"
+	text := "🚗 Вы не водитель"
 	if was {
-		text = "🚗 Driver location cleared"
+		text = "🚗 Водитель отключён"
 	}
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
@@ -825,7 +817,6 @@ func (t *Tracker) execPickup(ctx context.Context, b *bot.Bot, id string) {
 	if ok {
 		info.Status = StatusPickedUp
 	}
-	kb := t.keyboard()
 	if ok {
 		t.saveState()
 	}
@@ -840,9 +831,8 @@ func (t *Tracker) execPickup(ctx context.Context, b *bot.Bot, id string) {
 		label = name
 	}
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID:      chatID,
-		Text:        fmt.Sprintf("✅ %s picked up", label),
-		ReplyMarkup: kb,
+		ChatID: chatID,
+		Text:   fmt.Sprintf("✅ %s забран", label),
 	}); err != nil {
 		log.Printf("failed to confirm pickup for %s: %v", id, err)
 	}

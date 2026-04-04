@@ -207,7 +207,7 @@ func (t *Tracker) loadDevices() {
 
 // keyboard returns an inline keyboard based on current tracker state.
 // Must be called with t.mu held.
-func (t *Tracker) keyboard() *models.InlineKeyboardMarkup {
+func (t *Tracker) replyKeyboard() *models.ReplyKeyboardMarkup {
 	if !t.sessionActive {
 		return nil
 	}
@@ -216,40 +216,33 @@ func (t *Tracker) keyboard() *models.InlineKeyboardMarkup {
 		return nil
 	}
 
-	var driverRow []models.InlineKeyboardButton
-	driverRow = append(driverRow, models.InlineKeyboardButton{Text: "🚗 Driver", CallbackData: "driver"})
-	for _, d := range t.drivers {
-		if d.Pos != nil {
-			driverRow = append(driverRow, models.InlineKeyboardButton{Text: "🚗 Stop", CallbackData: "driver_off"})
-			break
-		}
-	}
-
-	areaBtn := models.InlineKeyboardButton{Text: "📡 Area", CallbackData: "area"}
-	if t.trackArea != nil {
-		areaBtn = models.InlineKeyboardButton{Text: "📡 Area off", CallbackData: "area_off"}
-	}
-
 	if t.trackingOn {
-		return &models.InlineKeyboardMarkup{
-			InlineKeyboard: [][]models.InlineKeyboardButton{
+		areaText := "📡 Зона"
+		if t.trackArea != nil {
+			areaText = "📡 Зона ✕"
+		}
+		row2 := []models.KeyboardButton{{Text: areaText}, {Text: "🚗 Водитель"}}
+		return &models.ReplyKeyboardMarkup{
+			Keyboard: [][]models.KeyboardButton{
 				{
-					{Text: "⏹ Stop", CallbackData: "track_off"},
-					{Text: "📋 List", CallbackData: "list"},
-					{Text: "📍 Landing", CallbackData: "landing"},
+					{Text: "⏹ Стоп"},
+					{Text: "📋 Список"},
+					{Text: "📍 Посадка"},
 				},
-				{areaBtn, driverRow[0]},
+				row2,
 			},
+			ResizeKeyboard: true,
 		}
 	}
-	return &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
+	return &models.ReplyKeyboardMarkup{
+		Keyboard: [][]models.KeyboardButton{
 			{
-				{Text: "▶️ Track", CallbackData: "track_on"},
-				{Text: "📋 List", CallbackData: "list"},
-				{Text: "🔄 Reset", CallbackData: "session_reset"},
+				{Text: "▶️ Старт"},
+				{Text: "📋 Список"},
+				{Text: "🔄 Сброс"},
 			},
 		},
+		ResizeKeyboard: true,
 	}
 }
 
@@ -351,11 +344,54 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 	if update.Message == nil || update.Message.From == nil {
 		return
 	}
-	if !t.isTrusted(update.Message.From.ID) {
+	m := update.Message
+	if !t.isTrusted(m.From.ID) {
 		return
 	}
-	if update.Message.Location != nil {
-		t.handleLocation(ctx, b, update.Message)
+
+	// Handle location messages (landing, area, driver).
+	if m.Location != nil {
+		t.handleLocation(ctx, b, m)
+		return
+	}
+
+	// Route reply keyboard button presses.
+	if m.Text != "" {
+		chatID := m.Chat.ID
+		switch m.Text {
+		case "▶️ Старт":
+			if t.requireSession(ctx, b, chatID) {
+				t.execTrackOn(ctx, b, chatID)
+			}
+		case "⏹ Стоп":
+			if t.requireSession(ctx, b, chatID) {
+				t.execTrackOff(ctx, b, chatID)
+			}
+		case "📋 Список":
+			if t.requireSession(ctx, b, chatID) {
+				t.execList(ctx, b, chatID)
+			}
+		case "📍 Посадка":
+			if t.requireSession(ctx, b, chatID) {
+				t.execLanding(ctx, b, chatID)
+			}
+		case "📡 Зона":
+			if t.requireSession(ctx, b, chatID) {
+				t.execArea(ctx, b, chatID, 100)
+			}
+		case "📡 Зона ✕":
+			if t.requireSession(ctx, b, chatID) {
+				t.execAreaOff(ctx, b, chatID)
+			}
+		case "🚗 Водитель":
+			if t.requireSession(ctx, b, chatID) {
+				t.execDriver(ctx, b, chatID, m.From.ID, m.From.Username)
+			}
+		case "🔄 Сброс":
+			if t.requireSession(ctx, b, chatID) {
+				t.execSessionReset(ctx, b, chatID)
+			}
+		}
 	}
 }
 

@@ -128,14 +128,14 @@ func (t *Tracker) sendLandingAlert(e *landingEvent, chatID int64) {
 	if e.name != "" {
 		label = e.name
 	}
-	text := fmt.Sprintf("🪂 %s landed!", label)
-	text += fmt.Sprintf("\n⬆️ %.0fm  ⏱ %s", e.alt, e.time.In(e.tz).Format("15:04:05"))
+	text := fmt.Sprintf("🪂 %s сел!", label)
+	text += fmt.Sprintf("\n⬆️ %.0fм  ⏱ %s", e.alt, e.time.In(e.tz).Format("15:04:05"))
 
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
 			{
-				{Text: "🗺 Navigate", URL: mapsNavURL(e.lat, e.lon)},
-				{Text: "✅ Picked up", CallbackData: "pickup:" + e.id},
+				{Text: "🗺 Навигация", URL: mapsNavURL(e.lat, e.lon)},
+				{Text: "✅ Забрал", CallbackData: "pickup:" + e.id},
 			},
 		},
 	}
@@ -196,24 +196,24 @@ func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinat
 		}
 	}
 	if info.Status == StatusLanded && !info.LandingTime.IsZero() {
-		text += fmt.Sprintf(" (landed %s)", info.LandingTime.In(t.tz()).Format("15:04"))
+		text += fmt.Sprintf(" (сел %s)", info.LandingTime.In(t.tz()).Format("15:04"))
 	}
 
 	// Stale data warning.
 	if !info.LastUpdate.IsZero() && time.Since(info.LastUpdate) > staleThreshold {
 		mins := int(time.Since(info.LastUpdate).Minutes())
-		text += fmt.Sprintf("\n⚠️ No data for %d min", mins)
+		text += fmt.Sprintf("\n⚠️ Нет данных %d мин", mins)
 		text += "\n⏱ " + info.LastUpdate.In(t.tz()).Format("15:04:05")
 		return text
 	}
 
 	// Flight data line.
-	text += fmt.Sprintf("\n⬆️ %.0fm", pos.Altitude)
+	text += fmt.Sprintf("\n⬆️ %.0fм", pos.Altitude)
 	if pos.ClimbRate != 0 {
-		text += fmt.Sprintf("  %+.1fm/s", pos.ClimbRate)
+		text += fmt.Sprintf("  %+.1fм/с", pos.ClimbRate)
 	}
 	if pos.GroundSpeed > 0 {
-		text += fmt.Sprintf("  %.0fkm/h", pos.GroundSpeed)
+		text += fmt.Sprintf("  %.0fкм/ч", pos.GroundSpeed)
 	}
 	if pos.Course > 0 || pos.GroundSpeed > 0 {
 		text += "  " + formatBearing(float64(pos.Course))
@@ -222,13 +222,13 @@ func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinat
 	// Distance and bearing to landing.
 	if landing != nil {
 		distKm, bearing := distanceAndBearing(pos.Latitude, pos.Longitude, landing.Latitude, landing.Longitude)
-		text += fmt.Sprintf("\n📍 %.1fkm to landing (%s)", distKm, formatBearing(bearing))
+		text += fmt.Sprintf("\n📍 %.1fкм до посадки (%s)", distKm, formatBearing(bearing))
 	}
 
 	// Distance from nearest driver to landed pilot.
 	if info.Status == StatusLanded {
 		if distKm, bearing, ok := nearestDriver(pos.Latitude, pos.Longitude, drivers); ok {
-			text += fmt.Sprintf("\n🚗 %.1fkm from driver (%s)", distKm, formatBearing(bearing))
+			text += fmt.Sprintf("\n🚗 %.1fкм от водителя (%s)", distKm, formatBearing(bearing))
 		}
 	}
 
@@ -285,7 +285,7 @@ func pilotButtons(local map[string]*TrackInfo) *models.InlineKeyboardMarkup {
 		}
 		rows = append(rows, []models.InlineKeyboardButton{
 			{Text: "🗺 " + label, URL: mapsNavURL(e.info.Position.Latitude, e.info.Position.Longitude)},
-			{Text: "✅ " + label, CallbackData: "pickup:" + e.id},
+			{Text: "✅ Забрал " + label, CallbackData: "pickup:" + e.id},
 		})
 	}
 	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
@@ -344,25 +344,25 @@ func (t *Tracker) buildSummary(local map[string]*TrackInfo, landing *Coordinates
 
 	// Header with counts.
 	total := len(local)
-	header := fmt.Sprintf("📊 %d pilot(s)", total)
+	header := fmt.Sprintf("📊 %d пилот(ов)", total)
 	var counts []string
 	if len(flying) > 0 {
-		counts = append(counts, fmt.Sprintf("%d flying", len(flying)))
+		counts = append(counts, fmt.Sprintf("%d в воздухе", len(flying)))
 	}
 	if len(landed) > 0 {
-		counts = append(counts, fmt.Sprintf("%d landed", len(landed)))
+		counts = append(counts, fmt.Sprintf("%d сели", len(landed)))
 	}
 	if len(pickedUp) > 0 {
-		counts = append(counts, fmt.Sprintf("%d picked up", len(pickedUp)))
+		counts = append(counts, fmt.Sprintf("%d забрали", len(pickedUp)))
 	}
 	if len(counts) > 0 {
 		header += " — " + strings.Join(counts, ", ")
 	}
 	if areaRadius > 0 {
-		header += fmt.Sprintf("\n📡 Area: %dkm radius", areaRadius)
+		header += fmt.Sprintf("\n📡 Зона: радиус %dкм", areaRadius)
 	}
 	if len(drivers) > 0 {
-		header += fmt.Sprintf("\n🚗 %d driver(s)", len(drivers))
+		header += fmt.Sprintf("\n🚗 %d водитель(ей)", len(drivers))
 	}
 
 	// Build per-pilot sections.
