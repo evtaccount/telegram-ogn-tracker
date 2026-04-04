@@ -538,14 +538,7 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			if !t.requireSession(ctx, b, chatID) {
 				break
 			}
-			t.mu.Lock()
-			hasPilots := t.session != nil && len(t.session.Tracking) > 0
-			t.mu.Unlock()
-			if hasPilots {
-				t.askStartChoice(ctx, b, chatID)
-			} else {
-				t.execTrackOn(ctx, b, chatID)
-			}
+			t.execTrackOn(ctx, b, chatID)
 		case "⏹ Стоп":
 			if t.requireSession(ctx, b, chatID) {
 				t.askTrackOffConfirm(ctx, b, chatID)
