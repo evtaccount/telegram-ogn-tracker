@@ -316,7 +316,11 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 }
 
 func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
-	log.Printf("DefaultHandler: msg=%v, cb=%v, edited=%v", update.Message != nil, update.CallbackQuery != nil, update.EditedMessage != nil)
+	if update.Message != nil {
+		log.Printf("DefaultHandler: text=%q, chat=%d, type=%s", update.Message.Text, update.Message.Chat.ID, update.Message.Chat.Type)
+	} else {
+		log.Printf("DefaultHandler: msg=%v, cb=%v, edited=%v", update.Message != nil, update.CallbackQuery != nil, update.EditedMessage != nil)
+	}
 	// Handle pickup callback queries (dynamic IDs, can't use exact match).
 	if update.CallbackQuery != nil {
 		cq := update.CallbackQuery
