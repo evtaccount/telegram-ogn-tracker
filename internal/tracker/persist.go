@@ -16,6 +16,7 @@ type appState struct {
 	Users   map[int64]*userState     `json:"users,omitempty"`
 }
 
+// userState is the JSON-serialisable snapshot of a user's profile.
 type userState struct {
 	Username    string `json:"username,omitempty"`
 	OGNID       string `json:"ogn_id,omitempty"`
@@ -34,6 +35,7 @@ type sessionState struct {
 	Timezone        string                 `json:"timezone,omitempty"`
 }
 
+// pilotState is the JSON-serialisable snapshot of a tracked pilot.
 type pilotState struct {
 	Name           string      `json:"name,omitempty"`
 	Username       string      `json:"username,omitempty"`
@@ -111,6 +113,8 @@ func (t *Tracker) saveState() {
 		return
 	}
 
+	// Атомарная запись: пишем во временный файл, затем переименовываем,
+	// чтобы не потерять данные при сбое в середине записи.
 	tmp := sessionFile + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		log.Printf("failed to write session file: %v", err)

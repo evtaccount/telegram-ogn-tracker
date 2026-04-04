@@ -14,11 +14,12 @@ import (
 	"ogn/parser"
 )
 
+// Пороговые значения для детекции посадки и устаревания данных.
 const (
-	staleThreshold         = 5 * time.Minute
-	landingSpeedThreshold  = 5.0  // km/h — below walking speed, filters out GPS noise
-	landingClimbThreshold  = 0.3  // m/s — any thermal produces > 0.3 m/s climb
-	landingConfirmDuration = 90 * time.Second
+	staleThreshold         = 5 * time.Minute  // данные старше этого помечаются предупреждением
+	landingSpeedThreshold  = 5.0              // km/h — ниже скорости пешехода, отсекает GPS-шум
+	landingClimbThreshold  = 0.3              // m/s — любой термик даёт > 0.3 м/с набора
+	landingConfirmDuration = 90 * time.Second // сколько пилот должен быть неподвижен для подтверждения посадки
 )
 
 // landingEvent captures data for a landing alert sent outside the mutex.
@@ -32,6 +33,8 @@ type landingEvent struct {
 	tz   *time.Location
 }
 
+// runClient connects to the OGN APRS server and processes position messages
+// in an infinite reconnect loop until stopCh is closed.
 func (t *Tracker) runClient(stopCh <-chan struct{}) {
 	log.Println("OGN client started")
 	for {
@@ -123,6 +126,8 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 	}
 }
 
+// sendLandingAlert sends a notification to the group when a pilot lands,
+// with navigation and pickup buttons.
 func (t *Tracker) sendLandingAlert(e *landingEvent, chatID int64) {
 	b := t.bot
 	if b == nil {
@@ -171,6 +176,8 @@ func nearestDriver(lat, lon float64, drivers []*Coordinates) (distKm float64, be
 	return minDist, bearing, true
 }
 
+// formatTrackText builds a multi-line text block for one pilot in the summary message:
+// status, altitude, speed, distance to landing, distance from nearest driver.
 func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinates, drivers []*Coordinates) string {
 	pos := info.Position
 
@@ -295,6 +302,8 @@ func pilotButtons(local map[string]*TrackInfo) *models.InlineKeyboardMarkup {
 	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
+// buildSummary composes the full tracking summary message with header counts
+// and per-pilot sections grouped by status (flying, landed, picked up, waiting).
 func (t *Tracker) buildSummary(local map[string]*TrackInfo, landing *Coordinates, drivers []*Coordinates, areaRadius int) string {
 	type entry struct {
 		id   string
@@ -395,6 +404,8 @@ func (t *Tracker) buildSummary(local map[string]*TrackInfo, landing *Coordinates
 	return header + "\n\n" + strings.Join(sections, "\n\n")
 }
 
+// sendUpdates runs a 30-second ticker that updates live locations on the map
+// and edits (or sends) the pinned summary message in the group chat.
 func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()

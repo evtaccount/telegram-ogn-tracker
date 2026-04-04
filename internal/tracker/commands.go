@@ -12,10 +12,13 @@ import (
 	"github.com/go-telegram/bot/models"
 )
 
+// isTrusted checks whether a Telegram user is allowed to interact with the bot.
+// Currently allows all users; will be restricted when multi-group support is added.
 func (t *Tracker) isTrusted(userID int64) bool {
 	return true
 }
 
+// requireGroupChat is a guard that replies with an error if called outside a group.
 func (t *Tracker) requireGroupChat(ctx context.Context, b *bot.Bot, m *models.Message) bool {
 	if isGroupChat(m.Chat) {
 		return true
@@ -29,6 +32,7 @@ func (t *Tracker) requireGroupChat(ctx context.Context, b *bot.Bot, m *models.Me
 	return false
 }
 
+// requireSession is a guard that replies with an error if no active session exists.
 func (t *Tracker) requireSession(ctx context.Context, b *bot.Bot, chatID int64) bool {
 	t.mu.Lock()
 	active := t.session != nil && t.session.ChatID != 0
@@ -46,6 +50,8 @@ func (t *Tracker) requireSession(ctx context.Context, b *bot.Bot, chatID int64) 
 
 // --- Command handlers ---
 
+// cmdStart handles /start: in groups — creates a fresh session,
+// in DMs — registers the user and processes deep-link payloads for /add flow.
 func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Update) {
 	m := update.Message
 	if m.From == nil || !t.isTrusted(m.From.ID) {
@@ -82,6 +88,8 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	}
 }
 
+// cmdStartPrivate handles /start in DMs.
+// Deep link payload "add_<groupChatID>" initiates the OGN ID input flow.
 func (t *Tracker) cmdStartPrivate(ctx context.Context, b *bot.Bot, m *models.Message) {
 	t.mu.Lock()
 	u := t.ensureUser(m.From)
@@ -271,6 +279,7 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 	}
 }
 
+// execAddDirect adds a pilot by OGN ID directly from /add <id> [name] in a group.
 func (t *Tracker) execAddDirect(ctx context.Context, b *bot.Bot, m *models.Message, args []string) {
 	id := shortID(args[0])
 	display := strings.Join(args[1:], " ")
@@ -745,6 +754,8 @@ func (t *Tracker) cmdDebugWipe(ctx context.Context, b *bot.Bot, update *models.U
 	}
 }
 
+// handleLocation dispatches an incoming location message to the appropriate handler:
+// driver (live location), landing point, or area center — depending on what's being awaited.
 func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Message) {
 	loc := m.Location
 
@@ -909,6 +920,8 @@ func (t *Tracker) cmdAreaOff(ctx context.Context, b *bot.Bot, update *models.Upd
 
 // --- Core logic used by both command and callback handlers ---
 
+// execSessionReset stops tracking and creates a new session.
+// If wipePilots is false, the pilot list is preserved for quick restart.
 func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64, wipePilots bool) {
 	log.Printf("[session] reset chat=%d wipePilots=%v", chatID, wipePilots)
 	t.mu.Lock()
@@ -947,6 +960,8 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 	}
 }
 
+// execTrackOn starts live tracking: resets pilot statuses, connects to OGN APRS,
+// and launches the client + update goroutines.
 func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Lock()
 	s := t.session
@@ -1006,6 +1021,7 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	}
 }
 
+// askStartChoice shows inline buttons to resume with existing pilots or start fresh.
 func (t *Tracker) askStartChoice(ctx context.Context, b *bot.Bot, chatID int64) {
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -1024,6 +1040,7 @@ func (t *Tracker) askStartChoice(ctx context.Context, b *bot.Bot, chatID int64) 
 	}
 }
 
+// askTrackOffConfirm shows a confirmation prompt before stopping tracking.
 func (t *Tracker) askTrackOffConfirm(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Lock()
 	s := t.session
@@ -1247,6 +1264,8 @@ func (t *Tracker) execDriver(ctx context.Context, b *bot.Bot, chatID int64, user
 	go t.driverWaitTimeout(gen, userID, chatID, username)
 }
 
+// driverWaitTimeout sends a reminder after 2 minutes and cleans up after 4 minutes
+// if the driver hasn't sent a live location. Uses WaitGen to avoid acting on stale requests.
 func (t *Tracker) driverWaitTimeout(gen int, userID int64, chatID int64, username string) {
 	time.Sleep(2 * time.Minute)
 
@@ -1327,6 +1346,7 @@ func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, u
 	}
 }
 
+// execPickup marks a pilot as picked up (StatusPickedUp) and confirms in the group.
 func (t *Tracker) execPickup(ctx context.Context, b *bot.Bot, id string) {
 	log.Printf("[pickup] id=%s", id)
 	t.mu.Lock()
@@ -1362,7 +1382,10 @@ func (t *Tracker) execPickup(ctx context.Context, b *bot.Bot, id string) {
 }
 
 // --- Callback query handlers for inline buttons ---
+// Callback handlers (cb*) are thin wrappers: they answer the callback query,
+// check trust, resolve chatID, and delegate to the corresponding exec* function.
 
+// answerCallback acknowledges a callback query to remove the loading spinner in Telegram.
 func (t *Tracker) answerCallback(ctx context.Context, b *bot.Bot, cq *models.CallbackQuery) {
 	if _, err := b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
 		CallbackQueryID: cq.ID,

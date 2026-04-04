@@ -36,17 +36,18 @@ func (s PilotStatus) Emoji() string {
 	}
 }
 
+// TrackInfo holds tracking state for a single pilot/aircraft.
 type TrackInfo struct {
-	MessageID      int
-	Position       *parser.PositionMessage
+	MessageID      int                     // Telegram message ID для live-локации на карте
+	Position       *parser.PositionMessage // последняя полученная позиция из OGN
 	Name           string
 	Username       string
 	LastUpdate     time.Time
 	Status         PilotStatus
 	LandingTime    time.Time
-	LowSpeedSince time.Time
-	AutoDiscovered bool
-	OwnerUserID    int64
+	LowSpeedSince time.Time // начало периода низкой скорости для детекции посадки
+	AutoDiscovered bool      // обнаружен автоматически через зону отслеживания
+	OwnerUserID    int64     // Telegram user ID владельца трекера
 }
 
 func (ti *TrackInfo) DisplayName() string {
@@ -56,17 +57,19 @@ func (ti *TrackInfo) DisplayName() string {
 	return ti.Username
 }
 
+// Coordinates represents a geographic point (WGS84).
 type Coordinates struct {
 	Latitude  float64
 	Longitude float64
 }
 
+// DriverInfo holds state for a driver who can pick up landed pilots.
 type DriverInfo struct {
 	Pos     *Coordinates
-	MsgID   int
-	Waiting bool
-	Expiry  time.Time
-	WaitGen int
+	MsgID   int       // Telegram message ID с live-локацией водителя
+	Waiting bool      // ожидаем live-локацию от пользователя
+	Expiry  time.Time // дедлайн для отправки локации
+	WaitGen int       // поколение ожидания — для отмены устаревших таймеров
 }
 
 // GroupSession holds all session-specific state for a single chat.
@@ -162,17 +165,20 @@ type UserInfo struct {
 	PendingGroup int64
 }
 
+// Tracker is the central controller that bridges Telegram bot and OGN APRS feed.
+// It manages a single group session, user registry, and APRS client lifecycle.
 type Tracker struct {
 	bot           *bot.Bot
 	botUsername   string
 	aprs          *client.Client
-	devices       map[string]ddb.Device
-	mu            sync.Mutex
+	devices       map[string]ddb.Device // кеш OGN Device Database для отображения модели/регистрации
+	mu            sync.Mutex            // guards session, users, devices
 	session       *GroupSession
 	users         map[int64]*UserInfo
-	resumeOnStart bool
+	resumeOnStart bool // флаг авто-возобновления трекинга после перезапуска
 }
 
+// aircraftTypes maps OGN aircraft type codes to human-readable names.
 var aircraftTypes = map[int]string{
 	0: "Unknown", 1: "Glider", 2: "Tow plane", 3: "Helicopter",
 	4: "Parachute", 5: "Drop plane", 6: "Hang glider", 7: "Paraglider",
@@ -180,6 +186,9 @@ var aircraftTypes = map[int]string{
 	12: "Airship", 13: "Drone", 15: "Static object",
 }
 
+// shortID normalizes an OGN address to its last 6 hex characters.
+// OGN APRS uses full callsigns like "FLR123ABC", but for matching
+// we only need the 6-char device address suffix.
 func shortID(id string) string {
 	id = strings.ToUpper(strings.TrimSpace(id))
 	if len(id) <= 6 {
@@ -188,6 +197,8 @@ func shortID(id string) string {
 	return id[len(id)-6:]
 }
 
+// distanceAndBearing computes distance (km) and bearing between two points
+// using CheapRuler for fast approximate calculations at paragliding distances.
 func distanceAndBearing(lat1, lon1, lat2, lon2 float64) (distKm float64, bearing float64) {
 	ruler := parser.NewCheapRuler((lat1 + lat2) / 2)
 	a := [2]float64{lon1, lat1}
@@ -195,6 +206,7 @@ func distanceAndBearing(lat1, lon1, lat2, lon2 float64) (distKm float64, bearing
 	return ruler.Distance(a, b) / 1000, ruler.Bearing(a, b)
 }
 
+// bearingName converts a bearing in degrees to a cardinal direction (N, NE, E, ...).
 func bearingName(deg float64) string {
 	deg = math.Mod(deg+360, 360)
 	names := []string{"N", "NE", "E", "SE", "S", "SW", "W", "NW"}
@@ -260,7 +272,8 @@ func (t *Tracker) updateFilter() {
 	if len(filters) > 0 {
 		t.aprs.Filter = client.CombineFilters(filters...)
 	} else if len(ids) > 0 {
-		// Short IDs without area — no filter (full feed).
+		// Короткие ID (<=6 символов) не поддерживаются budlist-фильтром APRS,
+		// поэтому получаем полный фид и фильтруем на стороне клиента.
 		t.aprs.Filter = ""
 	} else {
 		t.aprs.Filter = ""
@@ -271,6 +284,8 @@ func (t *Tracker) updateFilter() {
 	}
 }
 
+// loadDevices fetches the OGN DDB (device database) in the background.
+// Результат используется для отображения модели и регистрации рядом с ID.
 func (t *Tracker) loadDevices() {
 	devices, err := ddb.GetDevices()
 	if err != nil {
@@ -284,6 +299,7 @@ func (t *Tracker) loadDevices() {
 	log.Printf("loaded %d devices from OGN database", len(m))
 }
 
+// NewTracker creates a Tracker, restores persisted state, and loads the OGN DDB.
 func NewTracker() *Tracker {
 	t := &Tracker{
 		aprs:  client.New("N0CALL", ""),
@@ -318,6 +334,8 @@ func (t *Tracker) ensureUser(from *models.User) *UserInfo {
 	return u
 }
 
+// RegisterHandlers wires all Telegram command and callback handlers
+// and auto-resumes tracking if it was active before the restart.
 func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	t.bot = b
 
@@ -380,6 +398,9 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	}
 }
 
+// DefaultHandler processes updates that don't match any registered command:
+// pickup callbacks, driver live-location edits, location messages, DM text input,
+// and reply-keyboard button presses in groups.
 func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
 	// Handle pickup callback queries (dynamic IDs, can't use exact match).
 	if update.CallbackQuery != nil {
@@ -482,6 +503,8 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 	}
 }
 
+// handleDMText processes plain text in DMs — used for OGN ID input
+// during the /add flow when a pilot adds themselves via deep link.
 func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Message) {
 	t.mu.Lock()
 	u := t.ensureUser(m.From)
@@ -557,6 +580,7 @@ func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Messag
 	}
 }
 
+// commandArgs extracts the argument string after the first space in a command.
 func commandArgs(text string) string {
 	if i := strings.Index(text, " "); i != -1 {
 		return strings.TrimSpace(text[i+1:])
