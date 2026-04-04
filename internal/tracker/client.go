@@ -451,7 +451,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 				if heading > 0 {
 					editParams.Heading = heading
 				}
-				if _, err := b.EditMessageLiveLocation(ctx, editParams); err != nil {
+				if _, err := b.EditMessageLiveLocation(ctx, editParams); err != nil && !strings.Contains(err.Error(), "message is not modified") {
 					log.Printf("failed to edit location for %s: %v", id, err)
 				}
 			} else {
@@ -487,7 +487,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 				MessageID:   summaryMsgID,
 				Text:        summary,
 				ReplyMarkup: kb,
-			}); err != nil {
+			}); err != nil && !strings.Contains(err.Error(), "message is not modified") {
 				log.Printf("failed to edit summary: %v", err)
 			}
 		} else {
