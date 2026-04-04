@@ -156,7 +156,25 @@ func (t *Tracker) cmdSessionReset(ctx context.Context, b *bot.Bot, update *model
 	if !t.requireSession(ctx, b, m.Chat.ID) {
 		return
 	}
-	t.execSessionReset(ctx, b, m.Chat.ID)
+	t.askSessionResetConfirm(ctx, b, m.Chat.ID)
+}
+
+func (t *Tracker) askSessionResetConfirm(ctx context.Context, b *bot.Bot, chatID int64) {
+	kb := &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{Text: "Да, сбросить", CallbackData: "session_reset_confirm"},
+				{Text: "Отмена", CallbackData: "session_reset_cancel"},
+			},
+		},
+	}
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        "⚠️ Сбросить сессию? Все данные трекинга будут удалены. Это действие необратимо.",
+		ReplyMarkup: kb,
+	}); err != nil {
+		log.Printf("failed to send session reset confirmation: %v", err)
+	}
 }
 
 func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -189,36 +207,36 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 	}
 
 	// /add without arguments: initiate DM flow.
+	// Try sending DM directly (works if user ever started the bot).
 	t.mu.Lock()
 	s := t.session
-	u, userExists := t.users[m.From.ID]
-	hasDM := userExists && u.DMChatID != 0
-	var dmChatID int64
-	if hasDM {
-		u.PendingGroup = s.ChatID
-		dmChatID = u.DMChatID
-		hasOGNID := u.OGNID != ""
-		ognID := u.OGNID
+	u := t.ensureUser(m.From)
+	u.PendingGroup = s.ChatID
+	hasOGNID := u.OGNID != ""
+	ognID := u.OGNID
+	t.saveState()
+	botUsername := t.botUsername
+	groupChatID := s.ChatID
+	t.mu.Unlock()
+
+	// Try to send DM using user ID as chat ID.
+	var dmText string
+	if hasOGNID {
+		dmText = fmt.Sprintf("Ваш OGN ID: %s\nОтправьте новый ID или /confirm чтобы использовать текущий.", ognID)
+	} else {
+		dmText = "Отправьте ваш OGN ID (6-значный адрес трекера):"
+	}
+	_, dmErr := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: m.From.ID,
+		Text:   dmText,
+	})
+
+	if dmErr == nil {
+		// DM sent successfully — register DMChatID.
+		t.mu.Lock()
+		u.DMChatID = m.From.ID
 		t.saveState()
 		t.mu.Unlock()
-
-		// User has DM — send them a message directly.
-		if hasOGNID {
-			text := fmt.Sprintf("Ваш OGN ID: %s\nОтправьте новый ID или /confirm чтобы использовать текущий.", ognID)
-			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID: dmChatID,
-				Text:   text,
-			}); err != nil {
-				log.Printf("failed to send DM for add: %v", err)
-			}
-		} else {
-			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID: dmChatID,
-				Text:   "Отправьте ваш OGN ID (6-значный адрес трекера):",
-			}); err != nil {
-				log.Printf("failed to send DM for add: %v", err)
-			}
-		}
 
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: m.Chat.ID,
@@ -229,11 +247,8 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 		return
 	}
 
-	// User not known or no DM — send deep link button.
-	groupChatID := s.ChatID
-	botUsername := t.botUsername
-	t.mu.Unlock()
-
+	// Can't send DM — show deep link button.
+	log.Printf("failed to send DM to user %d, showing deep link: %v", m.From.ID, dmErr)
 	deepLink := fmt.Sprintf("https://t.me/%s?start=add_%d", botUsername, groupChatID)
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -693,6 +708,35 @@ func (t *Tracker) cmdHelp(ctx context.Context, b *bot.Bot, update *models.Update
 		Text:   text,
 	}); err != nil {
 		log.Printf("failed to send help: %v", err)
+	}
+}
+
+// cmdDebugWipe полностью очищает все данные бота. TODO: удалить после отладки.
+func (t *Tracker) cmdDebugWipe(ctx context.Context, b *bot.Bot, update *models.Update) {
+	m := update.Message
+	if m.From == nil || !t.isTrusted(m.From.ID) {
+		return
+	}
+
+	t.mu.Lock()
+	if t.session != nil {
+		t.session.stopTracking(t.aprs)
+	}
+	t.session = nil
+	t.users = make(map[int64]*UserInfo)
+	t.saveState()
+	t.mu.Unlock()
+
+	clearStateFile()
+
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: m.Chat.ID,
+		Text:   "Все данные бота полностью очищены.",
+		ReplyMarkup: &models.ReplyKeyboardRemove{
+			RemoveKeyboard: true,
+		},
+	}); err != nil {
+		log.Printf("failed to send wipe confirmation: %v", err)
 	}
 }
 
@@ -1373,5 +1417,43 @@ func (t *Tracker) cbSessionReset(ctx context.Context, b *bot.Bot, update *models
 		chatID = t.session.ChatID
 	}
 	t.mu.Unlock()
-	t.execSessionReset(ctx, b, chatID)
+	if chatID != 0 {
+		t.askSessionResetConfirm(ctx, b, chatID)
+	}
+}
+
+func (t *Tracker) cbSessionResetConfirm(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
+	t.answerCallback(ctx, b, cq)
+	if !t.isTrusted(cq.From.ID) {
+		return
+	}
+	// Remove the confirmation message.
+	if cq.Message.Message != nil {
+		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
+			ChatID:    cq.Message.Message.Chat.ID,
+			MessageID: cq.Message.Message.ID,
+		})
+	}
+	t.mu.Lock()
+	chatID := int64(0)
+	if t.session != nil {
+		chatID = t.session.ChatID
+	}
+	t.mu.Unlock()
+	if chatID != 0 {
+		t.execSessionReset(ctx, b, chatID)
+	}
+}
+
+func (t *Tracker) cbSessionResetCancel(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
+	t.answerCallback(ctx, b, cq)
+	// Remove the confirmation message.
+	if cq.Message.Message != nil {
+		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
+			ChatID:    cq.Message.Message.Chat.ID,
+			MessageID: cq.Message.Message.ID,
+		})
+	}
 }

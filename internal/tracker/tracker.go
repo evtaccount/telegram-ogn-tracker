@@ -344,6 +344,7 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "area_off", bot.MatchTypeCommand, t.cmdAreaOff)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "tz", bot.MatchTypeCommand, t.cmdTz)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "help", bot.MatchTypeCommand, t.cmdHelp)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "debug_wipe", bot.MatchTypeCommand, t.cmdDebugWipe)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "myid", bot.MatchTypeCommand, t.cmdMyID)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "confirm", bot.MatchTypeCommand, t.cmdConfirm)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "start", bot.MatchTypeCommand, t.cmdStart)
@@ -358,6 +359,8 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "area", bot.MatchTypeExact, t.cbArea)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "area_off", bot.MatchTypeExact, t.cbAreaOff)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset", bot.MatchTypeExact, t.cbSessionReset)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset_confirm", bot.MatchTypeExact, t.cbSessionResetConfirm)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset_cancel", bot.MatchTypeExact, t.cbSessionResetCancel)
 
 	// Auto-resume tracking if it was active before restart.
 	if t.resumeOnStart && t.session != nil {
@@ -460,7 +463,7 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			}
 		case "🔄 Сброс":
 			if t.requireSession(ctx, b, chatID) {
-				t.execSessionReset(ctx, b, chatID)
+				t.askSessionResetConfirm(ctx, b, chatID)
 			}
 		}
 	}
@@ -495,13 +498,15 @@ func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Messag
 	id := shortID(m.Text)
 	groupChatID := s.ChatID
 
-	// Add to session.
+	// Add to session (reset status — fresh add).
 	name := u.DisplayName
 	if info, ok := s.Tracking[id]; ok {
 		info.Name = name
 		info.Username = u.Username
 		info.OwnerUserID = u.UserID
 		info.AutoDiscovered = false
+		info.Status = StatusFlying
+		info.LandingTime = time.Time{}
 	} else {
 		s.Tracking[id] = &TrackInfo{
 			Name:        name,
