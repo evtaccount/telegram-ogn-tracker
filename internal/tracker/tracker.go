@@ -291,6 +291,10 @@ func mapsNavURL(lat, lon float64) string {
 	return fmt.Sprintf("https://www.google.com/maps/dir/?api=1&destination=%.6f,%.6f", lat, lon)
 }
 
+// ognPrefixes are the standard OGN APRS callsign prefixes.
+// Short 6-char IDs are expanded to all three variants for the budlist filter.
+var ognPrefixes = []string{"FLR", "OGN", "ICA"}
+
 // updateFilter rebuilds the APRS filter based on tracked IDs and area.
 func (t *Tracker) updateFilter() {
 	if t.session == nil {
@@ -300,19 +304,23 @@ func (t *Tracker) updateFilter() {
 	var filters []string
 
 	// Budlist for explicitly added IDs.
-	ids := make([]string, 0, len(s.Tracking))
-	filterable := true
+	// APRS budlist requires full callsigns (e.g. FLRFD0E8D).
+	// Short 6-char IDs are expanded with all known OGN prefixes.
+	var callsigns []string
 	for id, info := range s.Tracking {
 		if info.AutoDiscovered {
 			continue
 		}
-		ids = append(ids, id)
 		if len(id) <= 6 {
-			filterable = false
+			for _, prefix := range ognPrefixes {
+				callsigns = append(callsigns, prefix+id)
+			}
+		} else {
+			callsigns = append(callsigns, id)
 		}
 	}
-	if len(ids) > 0 && filterable {
-		filters = append(filters, client.BudlistFilter(ids...))
+	if len(callsigns) > 0 {
+		filters = append(filters, client.BudlistFilter(callsigns...))
 	}
 
 	// Range filter for area tracking.
@@ -322,14 +330,10 @@ func (t *Tracker) updateFilter() {
 
 	if len(filters) > 0 {
 		t.aprs.Filter = client.CombineFilters(filters...)
-	} else if len(ids) > 0 {
-		// Короткие ID (<=6 символов) не поддерживаются budlist-фильтром APRS,
-		// поэтому получаем полный фид и фильтруем на стороне клиента.
-		t.aprs.Filter = ""
 	} else {
 		t.aprs.Filter = ""
 	}
-	log.Printf("[filter] updated: %q (ids=%d, area=%v)", t.aprs.Filter, len(ids), s.TrackArea != nil)
+	log.Printf("[filter] updated: %q (ids=%d, area=%v)", t.aprs.Filter, len(callsigns), s.TrackArea != nil)
 	if s.TrackingOn {
 		t.aprs.Disconnect()
 	}
