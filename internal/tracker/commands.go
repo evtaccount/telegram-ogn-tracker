@@ -163,14 +163,19 @@ func (t *Tracker) askSessionResetConfirm(ctx context.Context, b *bot.Bot, chatID
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
 			{
-				{Text: "Да, сбросить", CallbackData: "session_reset_confirm"},
+				{Text: "Сбросить", CallbackData: "session_reset_confirm"},
+			},
+			{
+				{Text: "Сбросить и удалить пилотов", CallbackData: "session_reset_wipe"},
+			},
+			{
 				{Text: "Отмена", CallbackData: "session_reset_cancel"},
 			},
 		},
 	}
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
-		Text:        "⚠️ Сбросить сессию? Все данные трекинга будут удалены. Это действие необратимо.",
+		Text:        "⚠️ Сбросить сессию? Это действие необратимо.\n\n\"Сбросить\" — трекинг остановится, но добавленные пилоты сохранятся.\n\"Сбросить и удалить пилотов\" — полная очистка.",
 		ReplyMarkup: kb,
 	}); err != nil {
 		log.Printf("failed to send session reset confirmation: %v", err)
@@ -887,24 +892,39 @@ func (t *Tracker) cmdAreaOff(ctx context.Context, b *bot.Bot, update *models.Upd
 
 // --- Core logic used by both command and callback handlers ---
 
-func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64) {
-	log.Printf("[session] reset chat=%d", chatID)
+func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64, wipePilots bool) {
+	log.Printf("[session] reset chat=%d wipePilots=%v", chatID, wipePilots)
 	t.mu.Lock()
 	if t.session != nil {
 		t.session.stopTracking(t.aprs)
 	}
-	t.session = &GroupSession{
+	newSession := &GroupSession{
 		ChatID:   chatID,
 		Tracking: make(map[string]*TrackInfo),
 		Drivers:  make(map[int64]*DriverInfo),
 	}
+	// Keep existing pilots unless explicitly wiping.
+	if !wipePilots && t.session != nil {
+		for id, info := range t.session.Tracking {
+			newSession.Tracking[id] = &TrackInfo{
+				Name:        info.Name,
+				Username:    info.Username,
+				OwnerUserID: info.OwnerUserID,
+			}
+		}
+	}
+	t.session = newSession
 	t.updateFilter()
 	t.saveState()
 	t.mu.Unlock()
 
+	text := "Сессия сброшена. Пилоты сохранены."
+	if wipePilots {
+		text = "Сессия сброшена. Все пилоты удалены. Используйте /add для начала."
+	}
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: chatID,
-		Text:   "Сессия сброшена. Используйте /add <id> для начала.",
+		Text:   text,
 	}); err != nil {
 		log.Printf("failed to send session_reset message: %v", err)
 	}
@@ -1452,7 +1472,30 @@ func (t *Tracker) cbSessionResetConfirm(ctx context.Context, b *bot.Bot, update 
 	}
 	t.mu.Unlock()
 	if chatID != 0 {
-		t.execSessionReset(ctx, b, chatID)
+		t.execSessionReset(ctx, b, chatID, false)
+	}
+}
+
+func (t *Tracker) cbSessionResetWipe(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
+	t.answerCallback(ctx, b, cq)
+	if !t.isTrusted(cq.From.ID) {
+		return
+	}
+	if cq.Message.Message != nil {
+		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
+			ChatID:    cq.Message.Message.Chat.ID,
+			MessageID: cq.Message.Message.ID,
+		})
+	}
+	t.mu.Lock()
+	chatID := int64(0)
+	if t.session != nil {
+		chatID = t.session.ChatID
+	}
+	t.mu.Unlock()
+	if chatID != 0 {
+		t.execSessionReset(ctx, b, chatID, true)
 	}
 }
 
