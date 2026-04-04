@@ -77,8 +77,14 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 		return
 	}
 
-	// Group chat: always create a fresh empty session.
+	// Group chat: if session exists with pilots, ask before resetting.
 	t.mu.Lock()
+	if t.session != nil && t.session.ChatID == m.Chat.ID && len(t.session.Tracking) > 0 {
+		t.mu.Unlock()
+		t.askStartChoice(ctx, b, m.Chat.ID)
+		return
+	}
+	// No session or empty session — create fresh.
 	if t.session != nil {
 		t.session.stopTracking(t.aprs)
 	}
