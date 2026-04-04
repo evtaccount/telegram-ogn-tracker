@@ -216,6 +216,14 @@ func (t *Tracker) tz() *time.Location {
 	return time.UTC
 }
 
+func isGroupChat(chat models.Chat) bool {
+	return chat.Type == "group" || chat.Type == "supergroup"
+}
+
+func isPrivateChat(chat models.Chat) bool {
+	return chat.Type == "private"
+}
+
 func mapsNavURL(lat, lon float64) string {
 	return fmt.Sprintf("https://www.google.com/maps/dir/?api=1&destination=%.6f,%.6f", lat, lon)
 }
@@ -295,8 +303,32 @@ func NewTracker() *Tracker {
 	return t
 }
 
+// ensureUser returns or creates a UserInfo for the given Telegram user.
+// Must be called with t.mu held.
+func (t *Tracker) ensureUser(from *models.User) *UserInfo {
+	u, ok := t.users[from.ID]
+	if !ok {
+		u = &UserInfo{UserID: from.ID}
+		t.users[from.ID] = u
+	}
+	u.Username = from.Username
+	if u.DisplayName == "" {
+		u.DisplayName = strings.TrimSpace(from.FirstName + " " + from.LastName)
+	}
+	return u
+}
+
 func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	t.bot = b
+
+	// Fetch bot username for deep links.
+	if me, err := b.GetMe(context.Background()); err == nil {
+		t.botUsername = me.Username
+		log.Printf("bot username: @%s", t.botUsername)
+	} else {
+		log.Printf("failed to get bot info: %v", err)
+	}
+
 	b.RegisterHandler(bot.HandlerTypeMessageText, "start_session", bot.MatchTypeCommand, t.cmdStartSession)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "session_reset", bot.MatchTypeCommand, t.cmdSessionReset)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "add", bot.MatchTypeCommand, t.cmdAdd)
@@ -312,6 +344,8 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "area_off", bot.MatchTypeCommand, t.cmdAreaOff)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "tz", bot.MatchTypeCommand, t.cmdTz)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "help", bot.MatchTypeCommand, t.cmdHelp)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "myid", bot.MatchTypeCommand, t.cmdMyID)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "confirm", bot.MatchTypeCommand, t.cmdConfirm)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "start", bot.MatchTypeCommand, t.cmdStart)
 
 	// Inline button callbacks.
@@ -386,8 +420,14 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 		return
 	}
 
-	// Route reply keyboard button presses.
-	if m.Text != "" {
+	// Handle DM text (not a command) for pending OGN ID input.
+	if m.Text != "" && isPrivateChat(m.Chat) && !strings.HasPrefix(m.Text, "/") {
+		t.handleDMText(ctx, b, m)
+		return
+	}
+
+	// Route reply keyboard button presses (group only).
+	if m.Text != "" && isGroupChat(m.Chat) {
 		chatID := m.Chat.ID
 		switch m.Text {
 		case "▶️ Старт":
@@ -423,6 +463,79 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 				t.execSessionReset(ctx, b, chatID)
 			}
 		}
+	}
+}
+
+func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Message) {
+	t.mu.Lock()
+	u := t.ensureUser(m.From)
+	u.DMChatID = m.Chat.ID
+
+	if u.PendingGroup == 0 {
+		t.mu.Unlock()
+		return
+	}
+
+	// Check that the pending group session exists.
+	s := t.session
+	if s == nil || s.ChatID != u.PendingGroup {
+		pendingGroup := u.PendingGroup
+		u.PendingGroup = 0
+		t.saveState()
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   fmt.Sprintf("Группа %d не найдена. Попросите добавить вас заново.", pendingGroup),
+		}); err != nil {
+			log.Printf("failed to send pending group not found: %v", err)
+		}
+		return
+	}
+
+	id := shortID(m.Text)
+	groupChatID := s.ChatID
+
+	// Add to session.
+	name := u.DisplayName
+	if info, ok := s.Tracking[id]; ok {
+		info.Name = name
+		info.Username = u.Username
+		info.OwnerUserID = u.UserID
+		info.AutoDiscovered = false
+	} else {
+		s.Tracking[id] = &TrackInfo{
+			Name:        name,
+			Username:    u.Username,
+			OwnerUserID: u.UserID,
+		}
+	}
+
+	u.OGNID = id
+	u.PendingGroup = 0
+	t.updateFilter()
+	kb := s.replyKeyboard()
+	t.saveState()
+	t.mu.Unlock()
+
+	// Confirm in DM.
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: m.Chat.ID,
+		Text:   fmt.Sprintf("Добавлен %s в группу", id),
+	}); err != nil {
+		log.Printf("failed to confirm add in DM: %v", err)
+	}
+
+	// Confirm in group.
+	label := id
+	if name != "" {
+		label = id + " (" + name + ")"
+	}
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      groupChatID,
+		Text:        "Добавлен " + label,
+		ReplyMarkup: kb,
+	}); err != nil {
+		log.Printf("failed to confirm add in group: %v", err)
 	}
 }
 

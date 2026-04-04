@@ -16,6 +16,19 @@ func (t *Tracker) isTrusted(userID int64) bool {
 	return true
 }
 
+func (t *Tracker) requireGroupChat(ctx context.Context, b *bot.Bot, m *models.Message) bool {
+	if isGroupChat(m.Chat) {
+		return true
+	}
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: m.Chat.ID,
+		Text:   "Эта команда работает только в группе.",
+	}); err != nil {
+		log.Printf("failed to send group-only message: %v", err)
+	}
+	return false
+}
+
 func (t *Tracker) requireSession(ctx context.Context, b *bot.Bot, chatID int64) bool {
 	t.mu.Lock()
 	active := t.session != nil && t.session.ChatID != 0
@@ -38,8 +51,14 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
-	log.Printf("[cmd] /start from user=%d chat=%d", m.From.ID, m.Chat.ID)
+	log.Printf("[cmd] /start from user=%d chat=%d type=%s", m.From.ID, m.Chat.ID, m.Chat.Type)
 
+	if isPrivateChat(m.Chat) {
+		t.cmdStartPrivate(ctx, b, m)
+		return
+	}
+
+	// Group chat: create/reset group session.
 	t.mu.Lock()
 	if t.session != nil {
 		t.session.stopTracking(t.aprs)
@@ -63,6 +82,65 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	}
 }
 
+func (t *Tracker) cmdStartPrivate(ctx context.Context, b *bot.Bot, m *models.Message) {
+	t.mu.Lock()
+	u := t.ensureUser(m.From)
+	u.DMChatID = m.Chat.ID
+
+	// Check for deep link payload: /start add_<groupChatID>
+	payload := commandArgs(m.Text)
+	if strings.HasPrefix(payload, "add_") {
+		groupIDStr := payload[4:]
+		groupChatID, err := strconv.ParseInt(groupIDStr, 10, 64)
+		if err != nil {
+			t.saveState()
+			t.mu.Unlock()
+			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: m.Chat.ID,
+				Text:   "Неверная ссылка.",
+			}); err != nil {
+				log.Printf("failed to send invalid deep link: %v", err)
+			}
+			return
+		}
+
+		u.PendingGroup = groupChatID
+		hasOGNID := u.OGNID != ""
+		ognID := u.OGNID
+		t.saveState()
+		t.mu.Unlock()
+
+		if hasOGNID {
+			text := fmt.Sprintf("Ваш OGN ID: %s\nОтправьте новый ID или /confirm чтобы использовать текущий.", ognID)
+			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: m.Chat.ID,
+				Text:   text,
+			}); err != nil {
+				log.Printf("failed to send DM with existing ID: %v", err)
+			}
+		} else {
+			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: m.Chat.ID,
+				Text:   "Отправьте ваш OGN ID (6-значный адрес трекера):",
+			}); err != nil {
+				log.Printf("failed to send DM ask for OGN ID: %v", err)
+			}
+		}
+		return
+	}
+
+	// No deep link: just register DM.
+	t.saveState()
+	t.mu.Unlock()
+
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: m.Chat.ID,
+		Text:   "Бот готов. Используйте /myid чтобы задать свой OGN ID.",
+	}); err != nil {
+		log.Printf("failed to send private start message: %v", err)
+	}
+}
+
 func (t *Tracker) cmdStartSession(ctx context.Context, b *bot.Bot, update *models.Update) {
 	t.cmdStart(ctx, b, update)
 }
@@ -70,6 +148,9 @@ func (t *Tracker) cmdStartSession(ctx context.Context, b *bot.Bot, update *model
 func (t *Tracker) cmdSessionReset(ctx context.Context, b *bot.Bot, update *models.Update) {
 	m := update.Message
 	if m.From == nil || !t.isTrusted(m.From.ID) {
+		return
+	}
+	if !t.requireGroupChat(ctx, b, m) {
 		return
 	}
 	if !t.requireSession(ctx, b, m.Chat.ID) {
@@ -83,21 +164,94 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
+
+	// /add only works in groups.
+	if isPrivateChat(m.Chat) {
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   "Эта команда работает только в группе.",
+		}); err != nil {
+			log.Printf("failed to send group-only message: %v", err)
+		}
+		return
+	}
+
 	if !t.requireSession(ctx, b, m.Chat.ID) {
 		return
 	}
 
 	args := strings.Fields(commandArgs(m.Text))
-	if len(args) == 0 {
+
+	// /add with arguments: direct add (existing behavior).
+	if len(args) > 0 {
+		t.execAddDirect(ctx, b, m, args)
+		return
+	}
+
+	// /add without arguments: initiate DM flow.
+	t.mu.Lock()
+	s := t.session
+	u, userExists := t.users[m.From.ID]
+	hasDM := userExists && u.DMChatID != 0
+	var dmChatID int64
+	if hasDM {
+		u.PendingGroup = s.ChatID
+		dmChatID = u.DMChatID
+		hasOGNID := u.OGNID != ""
+		ognID := u.OGNID
+		t.saveState()
+		t.mu.Unlock()
+
+		// User has DM — send them a message directly.
+		if hasOGNID {
+			text := fmt.Sprintf("Ваш OGN ID: %s\nОтправьте новый ID или /confirm чтобы использовать текущий.", ognID)
+			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: dmChatID,
+				Text:   text,
+			}); err != nil {
+				log.Printf("failed to send DM for add: %v", err)
+			}
+		} else {
+			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: dmChatID,
+				Text:   "Отправьте ваш OGN ID (6-значный адрес трекера):",
+			}); err != nil {
+				log.Printf("failed to send DM for add: %v", err)
+			}
+		}
+
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: m.Chat.ID,
-			Text:   "Использование: /add <ogn_id> [имя]",
+			Text:   "Написал вам в личку",
 		}); err != nil {
-			log.Printf("failed to send usage: %v", err)
+			log.Printf("failed to confirm DM sent in group: %v", err)
 		}
 		return
 	}
 
+	// User not known or no DM — send deep link button.
+	groupChatID := s.ChatID
+	botUsername := t.botUsername
+	t.mu.Unlock()
+
+	deepLink := fmt.Sprintf("https://t.me/%s?start=add_%d", botUsername, groupChatID)
+	kb := &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{Text: "Добавить свой трекер", URL: deepLink},
+			},
+		},
+	}
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      m.Chat.ID,
+		Text:        "Напишите мне в личку, чтобы добавить свой трекер",
+		ReplyMarkup: kb,
+	}); err != nil {
+		log.Printf("failed to send deep link button: %v", err)
+	}
+}
+
+func (t *Tracker) execAddDirect(ctx context.Context, b *bot.Bot, m *models.Message, args []string) {
 	id := shortID(args[0])
 	display := strings.Join(args[1:], " ")
 	log.Printf("[cmd] /add id=%s name=%q from user=%d", id, display, m.From.ID)
@@ -201,6 +355,9 @@ func (t *Tracker) cmdTrackOn(ctx context.Context, b *bot.Bot, update *models.Upd
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
+	if !t.requireGroupChat(ctx, b, m) {
+		return
+	}
 	if !t.requireSession(ctx, b, m.Chat.ID) {
 		return
 	}
@@ -210,6 +367,9 @@ func (t *Tracker) cmdTrackOn(ctx context.Context, b *bot.Bot, update *models.Upd
 func (t *Tracker) cmdTrackOff(ctx context.Context, b *bot.Bot, update *models.Update) {
 	m := update.Message
 	if m.From == nil || !t.isTrusted(m.From.ID) {
+		return
+	}
+	if !t.requireGroupChat(ctx, b, m) {
 		return
 	}
 	if !t.requireSession(ctx, b, m.Chat.ID) {
@@ -223,6 +383,9 @@ func (t *Tracker) cmdList(ctx context.Context, b *bot.Bot, update *models.Update
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
+	if !t.requireGroupChat(ctx, b, m) {
+		return
+	}
 	if !t.requireSession(ctx, b, m.Chat.ID) {
 		return
 	}
@@ -232,6 +395,9 @@ func (t *Tracker) cmdList(ctx context.Context, b *bot.Bot, update *models.Update
 func (t *Tracker) cmdStatus(ctx context.Context, b *bot.Bot, update *models.Update) {
 	m := update.Message
 	if m.From == nil || !t.isTrusted(m.From.ID) {
+		return
+	}
+	if !t.requireGroupChat(ctx, b, m) {
 		return
 	}
 
@@ -263,6 +429,9 @@ func (t *Tracker) cmdStatus(ctx context.Context, b *bot.Bot, update *models.Upda
 func (t *Tracker) cmdLanding(ctx context.Context, b *bot.Bot, update *models.Update) {
 	m := update.Message
 	if m.From == nil || !t.isTrusted(m.From.ID) {
+		return
+	}
+	if !t.requireGroupChat(ctx, b, m) {
 		return
 	}
 	if !t.requireSession(ctx, b, m.Chat.ID) {
@@ -320,6 +489,175 @@ func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) 
 	}
 }
 
+func (t *Tracker) cmdMyID(ctx context.Context, b *bot.Bot, update *models.Update) {
+	m := update.Message
+	if m.From == nil || !t.isTrusted(m.From.ID) {
+		return
+	}
+	if !isPrivateChat(m.Chat) {
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   "Эта команда работает только в личке.",
+		}); err != nil {
+			log.Printf("failed to send private-only message: %v", err)
+		}
+		return
+	}
+
+	arg := commandArgs(m.Text)
+
+	t.mu.Lock()
+	u := t.ensureUser(m.From)
+	u.DMChatID = m.Chat.ID
+
+	if arg == "" {
+		// Show current OGN ID.
+		ognID := u.OGNID
+		t.mu.Unlock()
+		if ognID == "" {
+			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: m.Chat.ID,
+				Text:   "OGN ID не задан. Используйте /myid <id>",
+			}); err != nil {
+				log.Printf("failed to send myid empty: %v", err)
+			}
+		} else {
+			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: m.Chat.ID,
+				Text:   fmt.Sprintf("Ваш OGN ID: %s", ognID),
+			}); err != nil {
+				log.Printf("failed to send myid value: %v", err)
+			}
+		}
+		return
+	}
+
+	// Set new OGN ID.
+	newID := shortID(arg)
+	oldID := u.OGNID
+	u.OGNID = newID
+
+	// Update any TrackInfo entries owned by this user.
+	s := t.session
+	if s != nil && oldID != "" && oldID != newID {
+		if info, ok := s.Tracking[oldID]; ok && info.OwnerUserID == u.UserID {
+			delete(s.Tracking, oldID)
+			info.Name = u.DisplayName
+			info.Username = u.Username
+			s.Tracking[newID] = info
+			t.updateFilter()
+		}
+	}
+	t.saveState()
+	t.mu.Unlock()
+
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: m.Chat.ID,
+		Text:   fmt.Sprintf("OGN ID обновлён: %s", newID),
+	}); err != nil {
+		log.Printf("failed to confirm myid update: %v", err)
+	}
+}
+
+func (t *Tracker) cmdConfirm(ctx context.Context, b *bot.Bot, update *models.Update) {
+	m := update.Message
+	if m.From == nil || !t.isTrusted(m.From.ID) {
+		return
+	}
+	if !isPrivateChat(m.Chat) {
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   "Эта команда работает только в личке.",
+		}); err != nil {
+			log.Printf("failed to send private-only message: %v", err)
+		}
+		return
+	}
+
+	t.mu.Lock()
+	u := t.ensureUser(m.From)
+	u.DMChatID = m.Chat.ID
+
+	if u.PendingGroup == 0 {
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   "Нет ожидающей группы. Используйте /add в группе.",
+		}); err != nil {
+			log.Printf("failed to send no pending group: %v", err)
+		}
+		return
+	}
+	if u.OGNID == "" {
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   "OGN ID не задан. Отправьте ID сообщением или используйте /myid <id>.",
+		}); err != nil {
+			log.Printf("failed to send no ogn id: %v", err)
+		}
+		return
+	}
+
+	s := t.session
+	if s == nil || s.ChatID != u.PendingGroup {
+		u.PendingGroup = 0
+		t.saveState()
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   "Группа не найдена. Попросите добавить вас заново.",
+		}); err != nil {
+			log.Printf("failed to send pending group not found: %v", err)
+		}
+		return
+	}
+
+	id := u.OGNID
+	name := u.DisplayName
+	groupChatID := s.ChatID
+
+	if info, ok := s.Tracking[id]; ok {
+		info.Name = name
+		info.Username = u.Username
+		info.OwnerUserID = u.UserID
+		info.AutoDiscovered = false
+	} else {
+		s.Tracking[id] = &TrackInfo{
+			Name:        name,
+			Username:    u.Username,
+			OwnerUserID: u.UserID,
+		}
+	}
+
+	u.PendingGroup = 0
+	t.updateFilter()
+	kb := s.replyKeyboard()
+	t.saveState()
+	t.mu.Unlock()
+
+	// Confirm in DM.
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: m.Chat.ID,
+		Text:   fmt.Sprintf("Добавлен %s в группу", id),
+	}); err != nil {
+		log.Printf("failed to confirm in DM: %v", err)
+	}
+
+	// Confirm in group.
+	label := id
+	if name != "" {
+		label = id + " (" + name + ")"
+	}
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      groupChatID,
+		Text:        "Добавлен " + label,
+		ReplyMarkup: kb,
+	}); err != nil {
+		log.Printf("failed to confirm in group: %v", err)
+	}
+}
+
 func (t *Tracker) cmdHelp(ctx context.Context, b *bot.Bot, update *models.Update) {
 	m := update.Message
 	if m.From == nil || !t.isTrusted(m.From.ID) {
@@ -327,8 +665,10 @@ func (t *Tracker) cmdHelp(ctx context.Context, b *bot.Bot, update *models.Update
 	}
 
 	text := strings.Join([]string{
+		"Групповые команды:",
 		"/start — запуск / сброс бота",
 		"/add <id> [имя] — добавить OGN адрес",
+		"/add — добавить себя через личку",
 		"/remove <id> — удалить из отслеживания",
 		"/track_on — включить трекинг",
 		"/track_off — выключить трекинг",
@@ -341,6 +681,11 @@ func (t *Tracker) cmdHelp(ctx context.Context, b *bot.Bot, update *models.Update
 		"/list — список отслеживаемых",
 		"/status — текущее состояние",
 		"/session_reset — остановить и очистить всё",
+		"",
+		"Личные команды:",
+		"/myid [id] — показать / задать свой OGN ID",
+		"/confirm — подтвердить добавление текущего ID в группу",
+		"",
 		"/help — эта справка",
 	}, "\n")
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -445,6 +790,9 @@ func (t *Tracker) cmdDriver(ctx context.Context, b *bot.Bot, update *models.Upda
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
+	if !t.requireGroupChat(ctx, b, m) {
+		return
+	}
 	if !t.requireSession(ctx, b, m.Chat.ID) {
 		return
 	}
@@ -456,12 +804,18 @@ func (t *Tracker) cmdDriverOff(ctx context.Context, b *bot.Bot, update *models.U
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
+	if !t.requireGroupChat(ctx, b, m) {
+		return
+	}
 	t.execDriverOff(ctx, b, m.Chat.ID, m.From.ID)
 }
 
 func (t *Tracker) cmdArea(ctx context.Context, b *bot.Bot, update *models.Update) {
 	m := update.Message
 	if m.From == nil || !t.isTrusted(m.From.ID) {
+		return
+	}
+	if !t.requireGroupChat(ctx, b, m) {
 		return
 	}
 	if !t.requireSession(ctx, b, m.Chat.ID) {
@@ -479,6 +833,9 @@ func (t *Tracker) cmdArea(ctx context.Context, b *bot.Bot, update *models.Update
 func (t *Tracker) cmdAreaOff(ctx context.Context, b *bot.Bot, update *models.Update) {
 	m := update.Message
 	if m.From == nil || !t.isTrusted(m.From.ID) {
+		return
+	}
+	if !t.requireGroupChat(ctx, b, m) {
 		return
 	}
 	t.execAreaOff(ctx, b, m.Chat.ID)
