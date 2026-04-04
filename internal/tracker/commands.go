@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+	"ogn/client"
 )
 
 const (
@@ -1099,6 +1100,9 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	s.ChatID = chatID
 	// Set filter before enabling tracking so updateFilter doesn't restart goroutines.
 	t.updateFilter()
+	// Create a fresh APRS client — previous Disconnect() sets killed=true permanently.
+	t.aprs = client.New("N0CALL", t.aprs.Filter)
+	t.aprs.Logger = log.Default()
 	s.TrackingOn = true
 	s.StopCh = make(chan struct{})
 	stopCh := s.StopCh

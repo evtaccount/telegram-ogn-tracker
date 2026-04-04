@@ -336,12 +336,14 @@ func (t *Tracker) updateFilter() {
 	log.Printf("[filter] updated: %q (ids=%d, area=%v)", t.aprs.Filter, len(callsigns), s.TrackArea != nil)
 	if s.TrackingOn {
 		// Restart client goroutines to pick up the new filter.
-		// Disconnect() sets killed=true permanently, so we must
-		// stop the old goroutines and start fresh ones.
+		// Disconnect() permanently kills the client (killed=true),
+		// so we must create a fresh client instance.
 		if s.StopCh != nil {
 			close(s.StopCh)
 		}
 		t.aprs.Disconnect()
+		t.aprs = client.New("N0CALL", t.aprs.Filter)
+		t.aprs.Logger = log.Default()
 		s.StopCh = make(chan struct{})
 		go t.runClient(s.StopCh)
 		go t.sendUpdates(s.StopCh)

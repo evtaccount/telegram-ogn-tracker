@@ -17,6 +17,12 @@
 
 **Проблема:** `execTrackOn` ставил `TrackingOn = true` → вызывал `updateFilter()` → тот видел `TrackingOn == true` и вызывал `Disconnect()` → `killed = true` навсегда → `runClient` запускался, но `Run()` видел `killed` и возвращал nil → бесконечный цикл без подключения.
 
-**Решение:**
+**Решение (v1, неполное):**
 1. В `execTrackOn`: вызывать `updateFilter()` ДО `s.TrackingOn = true`, чтобы filter обновился без Disconnect
-2. В `updateFilter`: при `TrackingOn == true` — полный перезапуск горутин (close StopCh + Disconnect + новые горутины), чтобы mid-tracking обновления фильтра работали корректно
+2. В `updateFilter`: при `TrackingOn == true` — полный перезапуск горутин (close StopCh + Disconnect + новые горутины)
+
+**Проблема v1:** `Disconnect()` ставит `killed = true` навсегда в `*client.Client`. Новый `Run()` на том же клиенте видит `killed == true` и выходит мгновенно. Та же проблема возникает при повторном `execTrackOn` после `stopTracking` (который тоже вызывает `Disconnect`).
+
+**Решение (v2):** После каждого `Disconnect()` создавать новый `client.New(...)` вместо переиспользования убитого клиента. Применено в:
+- `updateFilter()` — mid-tracking рестарт при изменении фильтра
+- `execTrackOn()` — старт трекинга после предыдущего стопа
