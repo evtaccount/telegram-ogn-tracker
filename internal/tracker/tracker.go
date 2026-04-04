@@ -128,7 +128,7 @@ func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
 	return &models.ReplyKeyboardMarkup{
 		Keyboard: [][]models.KeyboardButton{
 			{
-				{Text: "▶️ Старт"},
+				{Text: "▶️ Трекинг"},
 				{Text: "📋 Список"},
 				{Text: "🔄 Сброс"},
 			},
@@ -436,7 +436,7 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 	if m.Text != "" && isGroupChat(m.Chat) {
 		chatID := m.Chat.ID
 		switch m.Text {
-		case "▶️ Старт":
+		case "▶️ Трекинг":
 			if t.requireSession(ctx, b, chatID) {
 				t.execTrackOn(ctx, b, chatID)
 			}
