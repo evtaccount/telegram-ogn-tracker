@@ -213,9 +213,8 @@ func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinat
 		altLine += fmt.Sprintf(" (%+.1fм/с)", pos.ClimbRate)
 	}
 	text += altLine
-	if pos.GroundSpeed > 0 || pos.Course > 0 {
-		spdLine := fmt.Sprintf("\nСкорость: %.0fкм/ч", pos.GroundSpeed)
-		spdLine += "  Курс: " + formatBearing(float64(pos.Course))
+	if pos.GroundSpeed > 0 {
+		spdLine := fmt.Sprintf("\nСкорость: %.0fкм/ч  Курс: %s", pos.GroundSpeed, formatBearing(float64(pos.Course)))
 		text += spdLine
 	}
 
