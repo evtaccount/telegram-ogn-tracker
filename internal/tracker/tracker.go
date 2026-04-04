@@ -46,6 +46,7 @@ type TrackInfo struct {
 	LandingTime    time.Time
 	LowSpeedSince time.Time
 	AutoDiscovered bool
+	OwnerUserID    int64
 }
 
 func (ti *TrackInfo) DisplayName() string {
@@ -68,27 +69,108 @@ type DriverInfo struct {
 	WaitGen int
 }
 
+// GroupSession holds all session-specific state for a single chat.
+type GroupSession struct {
+	ChatID          int64
+	Tracking        map[string]*TrackInfo
+	TrackingOn      bool
+	Landing         *Coordinates
+	TrackArea       *Coordinates
+	TrackAreaRadius int
+	Timezone        *time.Location
+	Drivers         map[int64]*DriverInfo
+	SummaryMsgID    int
+	// Runtime (not persisted):
+	StopCh         chan struct{}
+	WaitingLanding bool
+	LandingExpiry  time.Time
+	WaitingArea    bool
+	AreaExpiry     time.Time
+}
+
+// tz returns the session's timezone, defaulting to UTC.
+func (s *GroupSession) tz() *time.Location {
+	if s != nil && s.Timezone != nil {
+		return s.Timezone
+	}
+	return time.UTC
+}
+
+// replyKeyboard returns an inline keyboard based on current session state.
+// Must be called with t.mu held.
+func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
+	if s == nil {
+		return nil
+	}
+	hasContent := len(s.Tracking) > 0 || s.TrackArea != nil
+	if !hasContent {
+		return nil
+	}
+
+	if s.TrackingOn {
+		areaText := "📡 Зона"
+		if s.TrackArea != nil {
+			areaText = "📡 Зона ✕"
+		}
+		row2 := []models.KeyboardButton{{Text: areaText}, {Text: "🚗 Водитель"}}
+		return &models.ReplyKeyboardMarkup{
+			Keyboard: [][]models.KeyboardButton{
+				{
+					{Text: "⏹ Стоп"},
+					{Text: "📋 Список"},
+					{Text: "📍 Посадка"},
+				},
+				row2,
+			},
+			ResizeKeyboard: true,
+		}
+	}
+	return &models.ReplyKeyboardMarkup{
+		Keyboard: [][]models.KeyboardButton{
+			{
+				{Text: "▶️ Старт"},
+				{Text: "📋 Список"},
+				{Text: "🔄 Сброс"},
+			},
+		},
+		ResizeKeyboard: true,
+	}
+}
+
+// stopTracking disables tracking and signals goroutines to exit.
+// Must be called with t.mu held. Requires aprs client to disconnect.
+func (s *GroupSession) stopTracking(aprs *client.Client) {
+	if s == nil || !s.TrackingOn {
+		return
+	}
+	s.TrackingOn = false
+	s.SummaryMsgID = 0
+	if s.StopCh != nil {
+		close(s.StopCh)
+		s.StopCh = nil
+	}
+	aprs.Disconnect()
+}
+
+// UserInfo represents a known user across sessions.
+type UserInfo struct {
+	UserID       int64
+	Username     string
+	OGNID        string
+	DisplayName  string
+	DMChatID     int64
+	PendingGroup int64
+}
+
 type Tracker struct {
-	bot            *bot.Bot
-	aprs           *client.Client
-	tracking       map[string]*TrackInfo
-	mu             sync.Mutex
-	trackingOn     bool
-	stopCh         chan struct{}
-	chatID         int64
-	sessionActive  bool
-	landing        *Coordinates
-	waitingLanding bool
-	landingExpiry  time.Time
-	devices        map[string]ddb.Device
-	summaryMsgID   int
-	drivers         map[int64]*DriverInfo
-	trackArea       *Coordinates
-	trackAreaRadius int
-	waitingArea     bool
-	areaExpiry      time.Time
-	resumeOnStart   bool
-	timezone        *time.Location
+	bot           *bot.Bot
+	botUsername   string
+	aprs          *client.Client
+	devices       map[string]ddb.Device
+	mu            sync.Mutex
+	session       *GroupSession
+	users         map[int64]*UserInfo
+	resumeOnStart bool
 }
 
 var aircraftTypes = map[int]string{
@@ -125,11 +207,11 @@ func formatBearing(deg float64) string {
 	return fmt.Sprintf("(%.0f° | %s)", deg, bearingName(deg))
 }
 
-// formatTime formats a time value using the tracker's timezone.
-// Must be called with t.mu held, or use the returned location outside the lock.
+// tz returns the session timezone, defaulting to UTC.
+// Must be called with t.mu held.
 func (t *Tracker) tz() *time.Location {
-	if t.timezone != nil {
-		return t.timezone
+	if t.session != nil {
+		return t.session.tz()
 	}
 	return time.UTC
 }
@@ -140,12 +222,16 @@ func mapsNavURL(lat, lon float64) string {
 
 // updateFilter rebuilds the APRS filter based on tracked IDs and area.
 func (t *Tracker) updateFilter() {
+	if t.session == nil {
+		return
+	}
+	s := t.session
 	var filters []string
 
 	// Budlist for explicitly added IDs.
-	ids := make([]string, 0, len(t.tracking))
+	ids := make([]string, 0, len(s.Tracking))
 	filterable := true
-	for id, info := range t.tracking {
+	for id, info := range s.Tracking {
 		if info.AutoDiscovered {
 			continue
 		}
@@ -159,8 +245,8 @@ func (t *Tracker) updateFilter() {
 	}
 
 	// Range filter for area tracking.
-	if t.trackArea != nil {
-		filters = append(filters, client.RangeFilter(t.trackArea.Latitude, t.trackArea.Longitude, t.trackAreaRadius))
+	if s.TrackArea != nil {
+		filters = append(filters, client.RangeFilter(s.TrackArea.Latitude, s.TrackArea.Longitude, s.TrackAreaRadius))
 	}
 
 	if len(filters) > 0 {
@@ -171,25 +257,10 @@ func (t *Tracker) updateFilter() {
 	} else {
 		t.aprs.Filter = ""
 	}
-	log.Printf("[filter] updated: %q (ids=%d, area=%v)", t.aprs.Filter, len(ids), t.trackArea != nil)
-	if t.trackingOn {
+	log.Printf("[filter] updated: %q (ids=%d, area=%v)", t.aprs.Filter, len(ids), s.TrackArea != nil)
+	if s.TrackingOn {
 		t.aprs.Disconnect()
 	}
-}
-
-// stopTracking disables tracking and signals goroutines to exit.
-// Must be called with t.mu held.
-func (t *Tracker) stopTracking() {
-	if !t.trackingOn {
-		return
-	}
-	t.trackingOn = false
-	t.summaryMsgID = 0
-	if t.stopCh != nil {
-		close(t.stopCh)
-		t.stopCh = nil
-	}
-	t.aprs.Disconnect()
 }
 
 func (t *Tracker) loadDevices() {
@@ -205,52 +276,10 @@ func (t *Tracker) loadDevices() {
 	log.Printf("loaded %d devices from OGN database", len(m))
 }
 
-// keyboard returns an inline keyboard based on current tracker state.
-// Must be called with t.mu held.
-func (t *Tracker) replyKeyboard() *models.ReplyKeyboardMarkup {
-	if !t.sessionActive {
-		return nil
-	}
-	hasContent := len(t.tracking) > 0 || t.trackArea != nil
-	if !hasContent {
-		return nil
-	}
-
-	if t.trackingOn {
-		areaText := "📡 Зона"
-		if t.trackArea != nil {
-			areaText = "📡 Зона ✕"
-		}
-		row2 := []models.KeyboardButton{{Text: areaText}, {Text: "🚗 Водитель"}}
-		return &models.ReplyKeyboardMarkup{
-			Keyboard: [][]models.KeyboardButton{
-				{
-					{Text: "⏹ Стоп"},
-					{Text: "📋 Список"},
-					{Text: "📍 Посадка"},
-				},
-				row2,
-			},
-			ResizeKeyboard: true,
-		}
-	}
-	return &models.ReplyKeyboardMarkup{
-		Keyboard: [][]models.KeyboardButton{
-			{
-				{Text: "▶️ Старт"},
-				{Text: "📋 Список"},
-				{Text: "🔄 Сброс"},
-			},
-		},
-		ResizeKeyboard: true,
-	}
-}
-
 func NewTracker() *Tracker {
 	t := &Tracker{
-		aprs:     client.New("N0CALL", ""),
-		tracking: make(map[string]*TrackInfo),
-		drivers:  make(map[int64]*DriverInfo),
+		aprs:  client.New("N0CALL", ""),
+		users: make(map[int64]*UserInfo),
 	}
 
 	// Restore previous session.
@@ -297,11 +326,11 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset", bot.MatchTypeExact, t.cbSessionReset)
 
 	// Auto-resume tracking if it was active before restart.
-	if t.resumeOnStart {
+	if t.resumeOnStart && t.session != nil {
 		t.mu.Lock()
-		t.trackingOn = true
-		t.stopCh = make(chan struct{})
-		stopCh := t.stopCh
+		t.session.TrackingOn = true
+		t.session.StopCh = make(chan struct{})
+		stopCh := t.session.StopCh
 		t.mu.Unlock()
 		go t.runClient(stopCh)
 		go t.sendUpdates(stopCh)
@@ -328,13 +357,15 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 	// Handle driver live location updates (edited messages).
 	if update.EditedMessage != nil && update.EditedMessage.Location != nil {
 		t.mu.Lock()
-		for _, d := range t.drivers {
-			if d.MsgID != 0 && update.EditedMessage.ID == d.MsgID {
-				d.Pos = &Coordinates{
-					Latitude:  update.EditedMessage.Location.Latitude,
-					Longitude: update.EditedMessage.Location.Longitude,
+		if t.session != nil {
+			for _, d := range t.session.Drivers {
+				if d.MsgID != 0 && update.EditedMessage.ID == d.MsgID {
+					d.Pos = &Coordinates{
+						Latitude:  update.EditedMessage.Location.Latitude,
+						Longitude: update.EditedMessage.Location.Longitude,
+					}
+					break
 				}
-				break
 			}
 		}
 		t.mu.Unlock()

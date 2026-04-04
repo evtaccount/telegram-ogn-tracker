@@ -53,11 +53,16 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 			var alert *landingEvent
 
 			t.mu.Lock()
-			info, ok := t.tracking[id]
+			s := t.session
+			if s == nil {
+				t.mu.Unlock()
+				return
+			}
+			info, ok := s.Tracking[id]
 			// Auto-discover aircraft from area tracking.
-			if !ok && t.trackArea != nil {
+			if !ok && s.TrackArea != nil {
 				info = &TrackInfo{AutoDiscovered: true}
-				t.tracking[id] = info
+				s.Tracking[id] = info
 				ok = true
 				log.Printf("auto-discovered %s in area", id)
 			}
@@ -86,7 +91,7 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 								lon:  msg.Longitude,
 								alt:  msg.Altitude,
 								time: info.LandingTime,
-								tz:   t.tz(),
+								tz:   s.tz(),
 							}
 							log.Printf("landing detected for %s at %.5f,%.5f", id, msg.Latitude, msg.Longitude)
 						}
@@ -95,7 +100,7 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 					}
 				}
 			}
-			chatID := t.chatID
+			chatID := s.ChatID
 			if alert != nil {
 				t.saveState()
 			}
@@ -401,23 +406,28 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		}
 
 		t.mu.Lock()
-		chatID := t.chatID
-		landing := t.landing
+		s := t.session
+		if s == nil {
+			t.mu.Unlock()
+			continue
+		}
+		chatID := s.ChatID
+		landing := s.Landing
 		var drivers []*Coordinates
-		for _, d := range t.drivers {
+		for _, d := range s.Drivers {
 			if d.Pos != nil {
 				cp := *d.Pos
 				drivers = append(drivers, &cp)
 			}
 		}
 		areaRadius := 0
-		if t.trackArea != nil {
-			areaRadius = t.trackAreaRadius
+		if s.TrackArea != nil {
+			areaRadius = s.TrackAreaRadius
 		}
 		b := t.bot
-		summaryMsgID := t.summaryMsgID
+		summaryMsgID := s.SummaryMsgID
 		local := make(map[string]*TrackInfo)
-		for id, info := range t.tracking {
+		for id, info := range s.Tracking {
 			cp := *info
 			local[id] = &cp
 		}
@@ -469,8 +479,10 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 					continue
 				}
 				t.mu.Lock()
-				if ti, ok := t.tracking[id]; ok {
-					ti.MessageID = locMsg.ID
+				if t.session != nil {
+					if ti, ok := t.session.Tracking[id]; ok {
+						ti.MessageID = locMsg.ID
+					}
 				}
 				t.mu.Unlock()
 				log.Printf("sent location for %s", id)
@@ -499,7 +511,9 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 				log.Printf("failed to send summary: %v", err)
 			} else {
 				t.mu.Lock()
-				t.summaryMsgID = msg.ID
+				if t.session != nil {
+					t.session.SummaryMsgID = msg.ID
+				}
 				t.mu.Unlock()
 			}
 		}

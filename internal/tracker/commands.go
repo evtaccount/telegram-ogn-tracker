@@ -18,7 +18,7 @@ func (t *Tracker) isTrusted(userID int64) bool {
 
 func (t *Tracker) requireSession(ctx context.Context, b *bot.Bot, chatID int64) bool {
 	t.mu.Lock()
-	active := t.sessionActive
+	active := t.session != nil && t.session.ChatID != 0
 	t.mu.Unlock()
 	if !active {
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -41,16 +41,14 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	log.Printf("[cmd] /start from user=%d chat=%d", m.From.ID, m.Chat.ID)
 
 	t.mu.Lock()
-	t.chatID = m.Chat.ID
-	t.stopTracking()
-	t.tracking = make(map[string]*TrackInfo)
-	t.sessionActive = true
-	t.landing = nil
-	t.waitingLanding = false
-	t.summaryMsgID = 0
-	t.drivers = make(map[int64]*DriverInfo)
-	t.trackArea = nil
-	t.waitingArea = false
+	if t.session != nil {
+		t.session.stopTracking(t.aprs)
+	}
+	t.session = &GroupSession{
+		ChatID:   m.Chat.ID,
+		Tracking: make(map[string]*TrackInfo),
+		Drivers:  make(map[int64]*DriverInfo),
+	}
 	t.saveState()
 	t.mu.Unlock()
 
@@ -109,13 +107,14 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 	}
 
 	t.mu.Lock()
-	t.chatID = m.Chat.ID
-	if info, ok := t.tracking[id]; ok {
+	s := t.session
+	s.ChatID = m.Chat.ID
+	if info, ok := s.Tracking[id]; ok {
 		info.Name = display
 		info.Username = username
 		info.AutoDiscovered = false
 	} else {
-		t.tracking[id] = &TrackInfo{Name: display, Username: username}
+		s.Tracking[id] = &TrackInfo{Name: display, Username: username}
 	}
 	t.updateFilter()
 
@@ -138,7 +137,7 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 			}
 		}
 	}
-	kb := t.replyKeyboard()
+	kb := s.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
@@ -180,10 +179,11 @@ func (t *Tracker) cmdRemove(ctx context.Context, b *bot.Bot, update *models.Upda
 	log.Printf("[cmd] /remove id=%s from user=%d", id, m.From.ID)
 
 	t.mu.Lock()
-	t.chatID = m.Chat.ID
-	delete(t.tracking, id)
+	s := t.session
+	s.ChatID = m.Chat.ID
+	delete(s.Tracking, id)
 	t.updateFilter()
-	kb := t.replyKeyboard()
+	kb := s.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
@@ -237,11 +237,17 @@ func (t *Tracker) cmdStatus(ctx context.Context, b *bot.Bot, update *models.Upda
 
 	t.mu.Lock()
 	status := "выкл"
-	if t.trackingOn {
+	if t.session != nil && t.session.TrackingOn {
 		status = "вкл"
 	}
-	count := len(t.tracking)
-	kb := t.replyKeyboard()
+	count := 0
+	if t.session != nil {
+		count = len(t.session.Tracking)
+	}
+	var kb *models.ReplyKeyboardMarkup
+	if t.session != nil {
+		kb = t.session.replyKeyboard()
+	}
 	t.mu.Unlock()
 
 	text := fmt.Sprintf("Трекинг %s. Адресов: %d.", status, count)
@@ -300,7 +306,7 @@ func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) 
 	}
 
 	t.mu.Lock()
-	t.timezone = loc
+	t.session.Timezone = loc
 	t.saveState()
 	t.mu.Unlock()
 	log.Printf("[tz] set to %s", loc.String())
@@ -349,15 +355,20 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 	loc := m.Location
 
 	t.mu.Lock()
+	s := t.session
+	if s == nil {
+		t.mu.Unlock()
+		return
+	}
 
 	// Driver: check if this user is waiting.
-	if d, ok := t.drivers[m.From.ID]; ok && d.Waiting && time.Now().Before(d.Expiry) {
+	if d, ok := s.Drivers[m.From.ID]; ok && d.Waiting && time.Now().Before(d.Expiry) {
 		if loc.LivePeriod > 0 {
 			log.Printf("[driver] live location received from user=%d at %.5f,%.5f", m.From.ID, loc.Latitude, loc.Longitude)
 			d.Pos = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
 			d.MsgID = m.ID
 			d.Waiting = false
-			kb := t.replyKeyboard()
+			kb := s.replyKeyboard()
 			t.mu.Unlock()
 			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 				ChatID:      m.Chat.ID,
@@ -370,7 +381,7 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 		}
 		// Static pin — use as temporary position, keep waiting for live.
 		d.Pos = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
-		kb := t.replyKeyboard()
+		kb := s.replyKeyboard()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:      m.Chat.ID,
@@ -383,11 +394,11 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 	}
 
 	// Landing: expecting a static location pin.
-	if t.waitingLanding && time.Now().Before(t.landingExpiry) {
+	if s.WaitingLanding && time.Now().Before(s.LandingExpiry) {
 		log.Printf("[landing] location set at %.5f,%.5f by user=%d", loc.Latitude, loc.Longitude, m.From.ID)
-		t.landing = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
-		t.waitingLanding = false
-		kb := t.replyKeyboard()
+		s.Landing = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
+		s.WaitingLanding = false
+		kb := s.replyKeyboard()
 		t.saveState()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -401,19 +412,19 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 	}
 
 	// Area: expecting center location.
-	if t.waitingArea && time.Now().Before(t.areaExpiry) {
-		log.Printf("[area] center set at %.5f,%.5f radius=%dkm by user=%d", loc.Latitude, loc.Longitude, t.trackAreaRadius, m.From.ID)
-		t.trackArea = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
-		t.waitingArea = false
+	if s.WaitingArea && time.Now().Before(s.AreaExpiry) {
+		log.Printf("[area] center set at %.5f,%.5f radius=%dkm by user=%d", loc.Latitude, loc.Longitude, s.TrackAreaRadius, m.From.ID)
+		s.TrackArea = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
+		s.WaitingArea = false
 		// Remove previously auto-discovered entries when area changes.
-		for id, info := range t.tracking {
+		for id, info := range s.Tracking {
 			if info.AutoDiscovered {
-				delete(t.tracking, id)
+				delete(s.Tracking, id)
 			}
 		}
 		t.updateFilter()
-		radius := t.trackAreaRadius
-		kb := t.replyKeyboard()
+		radius := s.TrackAreaRadius
+		kb := s.replyKeyboard()
 		t.saveState()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -478,16 +489,15 @@ func (t *Tracker) cmdAreaOff(ctx context.Context, b *bot.Bot, update *models.Upd
 func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64) {
 	log.Printf("[session] reset chat=%d", chatID)
 	t.mu.Lock()
-	t.stopTracking()
-	t.tracking = make(map[string]*TrackInfo)
+	if t.session != nil {
+		t.session.stopTracking(t.aprs)
+	}
+	t.session = &GroupSession{
+		ChatID:   chatID,
+		Tracking: make(map[string]*TrackInfo),
+		Drivers:  make(map[int64]*DriverInfo),
+	}
 	t.updateFilter()
-	t.landing = nil
-	t.waitingLanding = false
-	t.summaryMsgID = 0
-	t.drivers = make(map[int64]*DriverInfo)
-	t.trackArea = nil
-	t.waitingArea = false
-	t.chatID = chatID
 	t.saveState()
 	t.mu.Unlock()
 
@@ -501,7 +511,8 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 
 func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Lock()
-	if len(t.tracking) == 0 && t.trackArea == nil {
+	s := t.session
+	if len(s.Tracking) == 0 && s.TrackArea == nil {
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
@@ -511,8 +522,8 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 		}
 		return
 	}
-	if t.trackingOn {
-		kb := t.replyKeyboard()
+	if s.TrackingOn {
+		kb := s.replyKeyboard()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:      chatID,
@@ -523,15 +534,15 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 		}
 		return
 	}
-	t.trackingOn = true
-	t.stopCh = make(chan struct{})
-	stopCh := t.stopCh
+	s.TrackingOn = true
+	s.StopCh = make(chan struct{})
+	stopCh := s.StopCh
 	t.updateFilter()
-	t.chatID = chatID
-	kb := t.replyKeyboard()
+	s.ChatID = chatID
+	kb := s.replyKeyboard()
 	t.saveState()
-	count := len(t.tracking)
-	hasArea := t.trackArea != nil
+	count := len(s.Tracking)
+	hasArea := s.TrackArea != nil
 	t.mu.Unlock()
 
 	log.Printf("[tracking] ON: %d pilots, area=%v, chat=%d", count, hasArea, chatID)
@@ -549,8 +560,9 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 
 func (t *Tracker) execTrackOff(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Lock()
-	if !t.trackingOn {
-		kb := t.replyKeyboard()
+	s := t.session
+	if !s.TrackingOn {
+		kb := s.replyKeyboard()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:      chatID,
@@ -561,8 +573,8 @@ func (t *Tracker) execTrackOff(ctx context.Context, b *bot.Bot, chatID int64) {
 		}
 		return
 	}
-	t.stopTracking()
-	kb := t.replyKeyboard()
+	s.stopTracking(t.aprs)
+	kb := s.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 	log.Printf("[tracking] OFF chat=%d", chatID)
@@ -578,8 +590,9 @@ func (t *Tracker) execTrackOff(ctx context.Context, b *bot.Bot, chatID int64) {
 
 func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Lock()
+	s := t.session
 	var entries []string
-	for id, info := range t.tracking {
+	for id, info := range s.Tracking {
 		entry := info.Status.Emoji() + " " + id
 		if info.Name != "" {
 			entry += " — " + info.Name
@@ -612,13 +625,13 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 		entries = append(entries, entry)
 	}
 	track := "выкл"
-	if t.trackingOn {
+	if s.TrackingOn {
 		track = "вкл"
 	}
 
 	// Copy tracking map for pilotButtons (still under lock).
-	localCopy := make(map[string]*TrackInfo, len(t.tracking))
-	for id, info := range t.tracking {
+	localCopy := make(map[string]*TrackInfo, len(s.Tracking))
+	for id, info := range s.Tracking {
 		cp := *info
 		localCopy[id] = &cp
 	}
@@ -646,9 +659,10 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 
 func (t *Tracker) execLanding(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Lock()
-	t.waitingLanding = true
-	t.landingExpiry = time.Now().Add(2 * time.Minute)
-	t.chatID = chatID
+	s := t.session
+	s.WaitingLanding = true
+	s.LandingExpiry = time.Now().Add(2 * time.Minute)
+	s.ChatID = chatID
 	t.mu.Unlock()
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -661,10 +675,11 @@ func (t *Tracker) execLanding(ctx context.Context, b *bot.Bot, chatID int64) {
 
 func (t *Tracker) execArea(ctx context.Context, b *bot.Bot, chatID int64, radiusKm int) {
 	t.mu.Lock()
-	t.waitingArea = true
-	t.areaExpiry = time.Now().Add(2 * time.Minute)
-	t.trackAreaRadius = radiusKm
-	t.chatID = chatID
+	s := t.session
+	s.WaitingArea = true
+	s.AreaExpiry = time.Now().Add(2 * time.Minute)
+	s.TrackAreaRadius = radiusKm
+	s.ChatID = chatID
 	t.mu.Unlock()
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -678,16 +693,17 @@ func (t *Tracker) execArea(ctx context.Context, b *bot.Bot, chatID int64, radius
 func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) {
 	log.Printf("[area] off chat=%d", chatID)
 	t.mu.Lock()
-	t.trackArea = nil
-	t.waitingArea = false
+	s := t.session
+	s.TrackArea = nil
+	s.WaitingArea = false
 	// Remove auto-discovered entries.
-	for id, info := range t.tracking {
+	for id, info := range s.Tracking {
 		if info.AutoDiscovered {
-			delete(t.tracking, id)
+			delete(s.Tracking, id)
 		}
 	}
 	t.updateFilter()
-	kb := t.replyKeyboard()
+	kb := s.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
@@ -702,8 +718,9 @@ func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) {
 
 func (t *Tracker) execDriver(ctx context.Context, b *bot.Bot, chatID int64, userID int64, username string) {
 	t.mu.Lock()
-	if d, ok := t.drivers[userID]; ok && d.MsgID != 0 {
-		kb := t.replyKeyboard()
+	s := t.session
+	if d, ok := s.Drivers[userID]; ok && d.MsgID != 0 {
+		kb := s.replyKeyboard()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:      chatID,
@@ -716,15 +733,15 @@ func (t *Tracker) execDriver(ctx context.Context, b *bot.Bot, chatID int64, user
 	}
 
 	gen := 1
-	if existing, ok := t.drivers[userID]; ok {
+	if existing, ok := s.Drivers[userID]; ok {
 		gen = existing.WaitGen + 1
 	}
-	t.drivers[userID] = &DriverInfo{
+	s.Drivers[userID] = &DriverInfo{
 		Waiting: true,
 		Expiry:  time.Now().Add(2 * time.Minute),
 		WaitGen: gen,
 	}
-	t.chatID = chatID
+	s.ChatID = chatID
 	t.mu.Unlock()
 	log.Printf("[driver] waiting for location from user=%d @%s", userID, username)
 
@@ -742,7 +759,11 @@ func (t *Tracker) driverWaitTimeout(gen int, userID int64, chatID int64, usernam
 	time.Sleep(2 * time.Minute)
 
 	t.mu.Lock()
-	d, ok := t.drivers[userID]
+	if t.session == nil {
+		t.mu.Unlock()
+		return
+	}
+	d, ok := t.session.Drivers[userID]
 	if !ok || d.WaitGen != gen || !d.Waiting {
 		t.mu.Unlock()
 		return
@@ -775,14 +796,18 @@ func (t *Tracker) driverWaitTimeout(gen int, userID int64, chatID int64, usernam
 	time.Sleep(2 * time.Minute)
 
 	t.mu.Lock()
-	d, ok = t.drivers[userID]
+	if t.session == nil {
+		t.mu.Unlock()
+		return
+	}
+	d, ok = t.session.Drivers[userID]
 	if !ok || d.WaitGen != gen || !d.Waiting {
 		t.mu.Unlock()
 		return
 	}
 	d.Waiting = false
 	if d.Pos == nil {
-		delete(t.drivers, userID)
+		delete(t.session.Drivers, userID)
 	}
 	t.mu.Unlock()
 	log.Printf("driver wait timed out for user %d", userID)
@@ -791,9 +816,10 @@ func (t *Tracker) driverWaitTimeout(gen int, userID int64, chatID int64, usernam
 func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, userID int64) {
 	log.Printf("[driver] off user=%d", userID)
 	t.mu.Lock()
-	_, was := t.drivers[userID]
-	delete(t.drivers, userID)
-	kb := t.replyKeyboard()
+	s := t.session
+	_, was := s.Drivers[userID]
+	delete(s.Drivers, userID)
+	kb := s.replyKeyboard()
 	t.mu.Unlock()
 
 	text := "🚗 Вы не водитель"
@@ -812,8 +838,13 @@ func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, u
 func (t *Tracker) execPickup(ctx context.Context, b *bot.Bot, id string) {
 	log.Printf("[pickup] id=%s", id)
 	t.mu.Lock()
-	chatID := t.chatID
-	info, ok := t.tracking[id]
+	s := t.session
+	if s == nil {
+		t.mu.Unlock()
+		return
+	}
+	chatID := s.ChatID
+	info, ok := s.Tracking[id]
 	if ok {
 		info.Status = StatusPickedUp
 	}
@@ -855,7 +886,10 @@ func (t *Tracker) cbTrackOn(ctx context.Context, b *bot.Bot, update *models.Upda
 		return
 	}
 	t.mu.Lock()
-	chatID := t.chatID
+	chatID := int64(0)
+	if t.session != nil {
+		chatID = t.session.ChatID
+	}
 	t.mu.Unlock()
 	t.execTrackOn(ctx, b, chatID)
 }
@@ -867,7 +901,10 @@ func (t *Tracker) cbTrackOff(ctx context.Context, b *bot.Bot, update *models.Upd
 		return
 	}
 	t.mu.Lock()
-	chatID := t.chatID
+	chatID := int64(0)
+	if t.session != nil {
+		chatID = t.session.ChatID
+	}
 	t.mu.Unlock()
 	t.execTrackOff(ctx, b, chatID)
 }
@@ -879,7 +916,10 @@ func (t *Tracker) cbList(ctx context.Context, b *bot.Bot, update *models.Update)
 		return
 	}
 	t.mu.Lock()
-	chatID := t.chatID
+	chatID := int64(0)
+	if t.session != nil {
+		chatID = t.session.ChatID
+	}
 	t.mu.Unlock()
 	t.execList(ctx, b, chatID)
 }
@@ -891,7 +931,10 @@ func (t *Tracker) cbLanding(ctx context.Context, b *bot.Bot, update *models.Upda
 		return
 	}
 	t.mu.Lock()
-	chatID := t.chatID
+	chatID := int64(0)
+	if t.session != nil {
+		chatID = t.session.ChatID
+	}
 	t.mu.Unlock()
 	t.execLanding(ctx, b, chatID)
 }
@@ -903,7 +946,10 @@ func (t *Tracker) cbDriver(ctx context.Context, b *bot.Bot, update *models.Updat
 		return
 	}
 	t.mu.Lock()
-	chatID := t.chatID
+	chatID := int64(0)
+	if t.session != nil {
+		chatID = t.session.ChatID
+	}
 	t.mu.Unlock()
 	t.execDriver(ctx, b, chatID, cq.From.ID, cq.From.Username)
 }
@@ -915,7 +961,10 @@ func (t *Tracker) cbDriverOff(ctx context.Context, b *bot.Bot, update *models.Up
 		return
 	}
 	t.mu.Lock()
-	chatID := t.chatID
+	chatID := int64(0)
+	if t.session != nil {
+		chatID = t.session.ChatID
+	}
 	t.mu.Unlock()
 	t.execDriverOff(ctx, b, chatID, cq.From.ID)
 }
@@ -927,8 +976,12 @@ func (t *Tracker) cbArea(ctx context.Context, b *bot.Bot, update *models.Update)
 		return
 	}
 	t.mu.Lock()
-	chatID := t.chatID
-	radius := t.trackAreaRadius
+	chatID := int64(0)
+	radius := 100
+	if t.session != nil {
+		chatID = t.session.ChatID
+		radius = t.session.TrackAreaRadius
+	}
 	t.mu.Unlock()
 	if radius == 0 {
 		radius = 100
@@ -943,7 +996,10 @@ func (t *Tracker) cbAreaOff(ctx context.Context, b *bot.Bot, update *models.Upda
 		return
 	}
 	t.mu.Lock()
-	chatID := t.chatID
+	chatID := int64(0)
+	if t.session != nil {
+		chatID = t.session.ChatID
+	}
 	t.mu.Unlock()
 	t.execAreaOff(ctx, b, chatID)
 }
@@ -955,7 +1011,10 @@ func (t *Tracker) cbSessionReset(ctx context.Context, b *bot.Bot, update *models
 		return
 	}
 	t.mu.Lock()
-	chatID := t.chatID
+	chatID := int64(0)
+	if t.session != nil {
+		chatID = t.session.ChatID
+	}
 	t.mu.Unlock()
 	t.execSessionReset(ctx, b, chatID)
 }
