@@ -504,20 +504,26 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		summary := t.buildSummary(local, landing, drivers, areaRadius)
 		kb := pilotButtons(local)
 		if summaryMsgID != 0 {
-			if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
-				ChatID:      chatID,
-				MessageID:   summaryMsgID,
-				Text:        summary,
-				ReplyMarkup: kb,
-			}); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+			editParams := &bot.EditMessageTextParams{
+				ChatID:    chatID,
+				MessageID: summaryMsgID,
+				Text:      summary,
+			}
+			if kb != nil {
+				editParams.ReplyMarkup = kb
+			}
+			if _, err := b.EditMessageText(ctx, editParams); err != nil && !strings.Contains(err.Error(), "message is not modified") {
 				log.Printf("failed to edit summary: %v", err)
 			}
 		} else {
-			msg, err := b.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID:      chatID,
-				Text:        summary,
-				ReplyMarkup: kb,
-			})
+			sendParams := &bot.SendMessageParams{
+				ChatID: chatID,
+				Text:   summary,
+			}
+			if kb != nil {
+				sendParams.ReplyMarkup = kb
+			}
+			msg, err := b.SendMessage(ctx, sendParams)
 			if err != nil {
 				log.Printf("failed to send summary: %v", err)
 			} else {
