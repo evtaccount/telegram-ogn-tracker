@@ -645,14 +645,19 @@ func (t *Tracker) cmdConfirm(ctx context.Context, b *bot.Bot, update *models.Upd
 	u.PendingGroup = 0
 	t.updateFilter()
 	kb := s.replyKeyboard()
+	dmKb := t.dmReplyKeyboard(u.UserID)
 	t.saveState()
 	t.mu.Unlock()
 
 	// Confirm in DM.
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	dmParams := &bot.SendMessageParams{
 		ChatID: m.Chat.ID,
 		Text:   fmt.Sprintf("Добавлен %s в группу", id),
-	}); err != nil {
+	}
+	if dmKb != nil {
+		dmParams.ReplyMarkup = dmKb
+	}
+	if _, err := b.SendMessage(ctx, dmParams); err != nil {
 		log.Printf("failed to confirm in DM: %v", err)
 	}
 
@@ -732,6 +737,119 @@ func (t *Tracker) cmdDebugWipe(ctx context.Context, b *bot.Bot, update *models.U
 		},
 	}); err != nil {
 		log.Printf("failed to send wipe confirmation: %v", err)
+	}
+}
+
+// execDMLanding initiates the landing flow from a private chat.
+// Asks the pilot to send their location pin.
+func (t *Tracker) execDMLanding(ctx context.Context, b *bot.Bot, m *models.Message) {
+	t.mu.Lock()
+	u := t.ensureUser(m.From)
+	u.DMChatID = m.Chat.ID
+
+	s := t.session
+	if s == nil || !s.TrackingOn || u.OGNID == "" {
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   "Трекинг не активен или OGN ID не задан.",
+		}); err != nil {
+			log.Printf("failed to send DM landing unavailable: %v", err)
+		}
+		return
+	}
+
+	info, ok := s.Tracking[u.OGNID]
+	if !ok || info.Status != StatusFlying {
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   "Вы не в списке летающих пилотов.",
+		}); err != nil {
+			log.Printf("failed to send DM not flying: %v", err)
+		}
+		return
+	}
+
+	s.WaitingLanding = true
+	s.LandingExpiry = time.Now().Add(waitTimeout)
+	t.mu.Unlock()
+
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: m.Chat.ID,
+		Text:   "Отправьте точку посадки в течение 2 минут",
+	}); err != nil {
+		log.Printf("failed to request DM landing location: %v", err)
+	}
+}
+
+// handleDMLanding processes a location sent in DM during the landing flow.
+// Sets the landing point in the group session and marks the sender as landed.
+func (t *Tracker) handleDMLanding(ctx context.Context, b *bot.Bot, m *models.Message) {
+	loc := m.Location
+
+	t.mu.Lock()
+	s := t.session
+	if s == nil {
+		t.mu.Unlock()
+		return
+	}
+
+	if !s.WaitingLanding || !time.Now().Before(s.LandingExpiry) {
+		t.mu.Unlock()
+		return
+	}
+
+	log.Printf("[landing/DM] location set at %.5f,%.5f by user=%d", loc.Latitude, loc.Longitude, m.From.ID)
+	s.Landing = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
+	s.WaitingLanding = false
+
+	// Mark the sender as landed.
+	var landedName string
+	if u, ok := t.users[m.From.ID]; ok && u.OGNID != "" {
+		if info, ok := s.Tracking[u.OGNID]; ok && info.Status == StatusFlying {
+			info.Status = StatusLanded
+			info.LandingTime = time.Now()
+			landedName = info.DisplayName()
+			log.Printf("[landing/DM] marked %s as landed (user=%d)", u.OGNID, m.From.ID)
+		}
+	}
+
+	groupChatID := s.ChatID
+	groupKb := s.replyKeyboard()
+	dmKb := t.dmReplyKeyboard(m.From.ID)
+	t.saveState()
+	t.mu.Unlock()
+
+	// Confirm in DM.
+	dmText := "Точка посадки сохранена"
+	if landedName != "" {
+		dmText += fmt.Sprintf("\n🪂 %s отмечен как севший", landedName)
+	}
+	params := &bot.SendMessageParams{
+		ChatID: m.Chat.ID,
+		Text:   dmText,
+	}
+	if dmKb != nil {
+		params.ReplyMarkup = dmKb
+	} else {
+		params.ReplyMarkup = &models.ReplyKeyboardRemove{RemoveKeyboard: true}
+	}
+	if _, err := b.SendMessage(ctx, params); err != nil {
+		log.Printf("failed to confirm DM landing: %v", err)
+	}
+
+	// Notify the group.
+	groupText := "📍 Точка посадки обновлена"
+	if landedName != "" {
+		groupText += fmt.Sprintf("\n🪂 %s сел", landedName)
+	}
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      groupChatID,
+		Text:        groupText,
+		ReplyMarkup: groupKb,
+	}); err != nil {
+		log.Printf("failed to notify group about DM landing: %v", err)
 	}
 }
 

@@ -115,15 +115,16 @@ func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
 		if s.TrackArea != nil {
 			areaText = "📡 Зона ✕"
 		}
-		row2 := []models.KeyboardButton{{Text: areaText}, {Text: "🚗 Водитель"}}
 		return &models.ReplyKeyboardMarkup{
 			Keyboard: [][]models.KeyboardButton{
 				{
 					{Text: "⏹ Стоп"},
 					{Text: "📋 Список"},
-					{Text: "📍 Посадка"},
 				},
-				row2,
+				{
+					{Text: areaText},
+					{Text: "🚗 Водитель"},
+				},
 			},
 			ResizeKeyboard: true,
 		}
@@ -135,6 +136,30 @@ func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
 				{Text: "📋 Список"},
 				{Text: "🔄 Завершить"},
 			},
+		},
+		ResizeKeyboard: true,
+	}
+}
+
+// dmReplyKeyboard returns a reply keyboard for private chat.
+// Shows "📍 Посадка" only if the user is actively tracked and flying.
+// Must be called with t.mu held.
+func (t *Tracker) dmReplyKeyboard(userID int64) *models.ReplyKeyboardMarkup {
+	u, ok := t.users[userID]
+	if !ok || u.OGNID == "" {
+		return nil
+	}
+	s := t.session
+	if s == nil || !s.TrackingOn {
+		return nil
+	}
+	info, ok := s.Tracking[u.OGNID]
+	if !ok || info.Status != StatusFlying {
+		return nil
+	}
+	return &models.ReplyKeyboardMarkup{
+		Keyboard: [][]models.KeyboardButton{
+			{{Text: "📍 Посадка"}},
 		},
 		ResizeKeyboard: true,
 	}
@@ -469,14 +494,22 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 		return
 	}
 
-	// Handle location messages (landing, area, driver).
+	// Handle location messages.
 	if m.Location != nil {
-		t.handleLocation(ctx, b, m)
+		if isPrivateChat(m.Chat) {
+			t.handleDMLanding(ctx, b, m)
+		} else {
+			t.handleLocation(ctx, b, m)
+		}
 		return
 	}
 
-	// Handle DM text (not a command) for pending OGN ID input.
+	// Handle DM text/buttons.
 	if m.Text != "" && isPrivateChat(m.Chat) && !strings.HasPrefix(m.Text, "/") {
+		if m.Text == "📍 Посадка" {
+			t.execDMLanding(ctx, b, m)
+			return
+		}
 		t.handleDMText(ctx, b, m)
 		return
 	}
@@ -504,10 +537,6 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 		case "📋 Список":
 			if t.requireSession(ctx, b, chatID) {
 				t.execList(ctx, b, chatID)
-			}
-		case "📍 Посадка":
-			if t.requireSession(ctx, b, chatID) {
-				t.execLanding(ctx, b, chatID)
 			}
 		case "📡 Зона":
 			if t.requireSession(ctx, b, chatID) {
@@ -581,14 +610,19 @@ func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Messag
 	u.PendingGroup = 0
 	t.updateFilter()
 	kb := s.replyKeyboard()
+	dmKb := t.dmReplyKeyboard(u.UserID)
 	t.saveState()
 	t.mu.Unlock()
 
 	// Confirm in DM.
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	dmParams := &bot.SendMessageParams{
 		ChatID: m.Chat.ID,
 		Text:   fmt.Sprintf("Добавлен %s в группу", id),
-	}); err != nil {
+	}
+	if dmKb != nil {
+		dmParams.ReplyMarkup = dmKb
+	}
+	if _, err := b.SendMessage(ctx, dmParams); err != nil {
 		log.Printf("failed to confirm add in DM: %v", err)
 	}
 
