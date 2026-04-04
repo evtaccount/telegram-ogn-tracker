@@ -1006,6 +1006,24 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	}
 }
 
+func (t *Tracker) askStartChoice(ctx context.Context, b *bot.Bot, chatID int64) {
+	kb := &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{Text: "Продолжить", CallbackData: "start_resume"},
+				{Text: "Новая сессия", CallbackData: "start_fresh"},
+			},
+		},
+	}
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        "Есть пилоты из прошлой сессии. Продолжить или начать новую?",
+		ReplyMarkup: kb,
+	}); err != nil {
+		log.Printf("failed to send start choice: %v", err)
+	}
+}
+
 func (t *Tracker) askTrackOffConfirm(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Lock()
 	s := t.session
@@ -1584,5 +1602,58 @@ func (t *Tracker) cbTrackOffCancel(ctx context.Context, b *bot.Bot, update *mode
 			ChatID:    cq.Message.Message.Chat.ID,
 			MessageID: cq.Message.Message.ID,
 		})
+	}
+}
+
+func (t *Tracker) cbStartResume(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
+	t.answerCallback(ctx, b, cq)
+	if !t.isTrusted(cq.From.ID) {
+		return
+	}
+	if cq.Message.Message != nil {
+		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
+			ChatID:    cq.Message.Message.Chat.ID,
+			MessageID: cq.Message.Message.ID,
+		})
+	}
+	t.mu.Lock()
+	chatID := int64(0)
+	if t.session != nil {
+		chatID = t.session.ChatID
+	}
+	t.mu.Unlock()
+	if chatID != 0 {
+		t.execTrackOn(ctx, b, chatID)
+	}
+}
+
+func (t *Tracker) cbStartFresh(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
+	t.answerCallback(ctx, b, cq)
+	if !t.isTrusted(cq.From.ID) {
+		return
+	}
+	if cq.Message.Message != nil {
+		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
+			ChatID:    cq.Message.Message.Chat.ID,
+			MessageID: cq.Message.Message.ID,
+		})
+	}
+	t.mu.Lock()
+	chatID := int64(0)
+	if t.session != nil {
+		chatID = t.session.ChatID
+		t.session.stopTracking(t.aprs)
+	}
+	t.session = &GroupSession{
+		ChatID:   chatID,
+		Tracking: make(map[string]*TrackInfo),
+		Drivers:  make(map[int64]*DriverInfo),
+	}
+	t.saveState()
+	t.mu.Unlock()
+	if chatID != 0 {
+		t.execTrackOn(ctx, b, chatID)
 	}
 }

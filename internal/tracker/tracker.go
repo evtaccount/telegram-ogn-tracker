@@ -130,7 +130,7 @@ func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
 			{
 				{Text: "▶️ Старт"},
 				{Text: "📋 Список"},
-				{Text: "🔄 Сброс"},
+				{Text: "🔄 Завершить"},
 			},
 		},
 		ResizeKeyboard: true,
@@ -359,6 +359,8 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "area", bot.MatchTypeExact, t.cbArea)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "area_off", bot.MatchTypeExact, t.cbAreaOff)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset", bot.MatchTypeExact, t.cbSessionReset)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "start_resume", bot.MatchTypeExact, t.cbStartResume)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "start_fresh", bot.MatchTypeExact, t.cbStartFresh)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "track_off_confirm", bot.MatchTypeExact, t.cbTrackOffConfirm)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "track_off_cancel", bot.MatchTypeExact, t.cbTrackOffCancel)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset_confirm", bot.MatchTypeExact, t.cbSessionResetConfirm)
@@ -437,18 +439,17 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 		chatID := m.Chat.ID
 		switch m.Text {
 		case "▶️ Старт":
+			if !t.requireSession(ctx, b, chatID) {
+				break
+			}
 			t.mu.Lock()
-			if t.session != nil {
-				t.session.stopTracking(t.aprs)
-			}
-			t.session = &GroupSession{
-				ChatID:   chatID,
-				Tracking: make(map[string]*TrackInfo),
-				Drivers:  make(map[int64]*DriverInfo),
-			}
-			t.saveState()
+			hasPilots := t.session != nil && len(t.session.Tracking) > 0
 			t.mu.Unlock()
-			t.execTrackOn(ctx, b, chatID)
+			if hasPilots {
+				t.askStartChoice(ctx, b, chatID)
+			} else {
+				t.execTrackOn(ctx, b, chatID)
+			}
 		case "⏹ Стоп":
 			if t.requireSession(ctx, b, chatID) {
 				t.askTrackOffConfirm(ctx, b, chatID)
@@ -473,7 +474,7 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			if t.requireSession(ctx, b, chatID) {
 				t.execDriver(ctx, b, chatID, m.From.ID, m.From.Username)
 			}
-		case "🔄 Сброс":
+		case "🔄 Завершить":
 			if t.requireSession(ctx, b, chatID) {
 				t.askSessionResetConfirm(ctx, b, chatID)
 			}
