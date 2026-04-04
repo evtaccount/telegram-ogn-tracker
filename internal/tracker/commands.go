@@ -792,12 +792,29 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 		log.Printf("[landing] location set at %.5f,%.5f by user=%d", loc.Latitude, loc.Longitude, m.From.ID)
 		s.Landing = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
 		s.WaitingLanding = false
+
+		// Mark the sender as landed if they have a tracked OGN ID.
+		var landedName string
+		if u, ok := t.users[m.From.ID]; ok && u.OGNID != "" {
+			if info, ok := s.Tracking[u.OGNID]; ok && info.Status == StatusFlying {
+				info.Status = StatusLanded
+				info.LandingTime = time.Now()
+				landedName = info.DisplayName()
+				log.Printf("[landing] marked %s as landed (user=%d)", u.OGNID, m.From.ID)
+			}
+		}
+
 		kb := s.replyKeyboard()
 		t.saveState()
 		t.mu.Unlock()
+
+		text := "Точка посадки сохранена"
+		if landedName != "" {
+			text += fmt.Sprintf("\n🪂 %s отмечен как севший", landedName)
+		}
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:      m.Chat.ID,
-			Text:        "Точка посадки сохранена",
+			Text:        text,
 			ReplyMarkup: kb,
 		}); err != nil {
 			log.Printf("failed to confirm landing location: %v", err)
