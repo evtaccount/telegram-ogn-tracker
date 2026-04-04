@@ -66,7 +66,7 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 				ok = true
 				log.Printf("auto-discovered %s in area", id)
 			}
-			if ok && info.Status != StatusPickedUp {
+			if ok && info.Status != StatusPickedUp && info.Status != StatusLanded {
 				info.Position = msg
 				info.LastUpdate = time.Now()
 
@@ -441,7 +441,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 
 		// Update per-pilot live locations on the map (skip auto-discovered).
 		for id, info := range local {
-			if info.Position == nil || info.Status == StatusPickedUp || info.AutoDiscovered {
+			if info.Position == nil || info.Status == StatusPickedUp || info.Status == StatusLanded || info.AutoDiscovered {
 				continue
 			}
 
