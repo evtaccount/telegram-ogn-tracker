@@ -293,7 +293,7 @@ func mapsNavURL(lat, lon float64) string {
 
 // ognPrefixes are the standard OGN APRS callsign prefixes.
 // Short 6-char IDs are expanded to all three variants for the budlist filter.
-var ognPrefixes = []string{"FLR", "OGN", "ICA"}
+var ognPrefixes = []string{"FLR", "OGN", "ICA", "NAV", "FNT"}
 
 // updateFilter rebuilds the APRS filter based on tracked IDs and area.
 func (t *Tracker) updateFilter() {
