@@ -935,6 +935,16 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 		}
 		return
 	}
+	// Reset pilot statuses for a fresh tracking session.
+	for _, info := range s.Tracking {
+		info.Status = StatusFlying
+		info.LandingTime = time.Time{}
+		info.LowSpeedSince = time.Time{}
+		info.MessageID = 0
+		info.Position = nil
+		info.LastUpdate = time.Time{}
+	}
+	s.SummaryMsgID = 0
 	s.TrackingOn = true
 	s.StopCh = make(chan struct{})
 	stopCh := s.StopCh
