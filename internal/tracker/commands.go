@@ -58,7 +58,7 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 		return
 	}
 
-	// Group chat: create/reset group session.
+	// Group chat: always create a fresh empty session.
 	t.mu.Lock()
 	if t.session != nil {
 		t.session.stopTracking(t.aprs)
