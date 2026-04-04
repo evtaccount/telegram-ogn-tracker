@@ -38,6 +38,7 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
+	log.Printf("[cmd] /start from user=%d chat=%d", m.From.ID, m.Chat.ID)
 
 	t.mu.Lock()
 	t.chatID = m.Chat.ID
@@ -101,6 +102,7 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 
 	id := shortID(args[0])
 	display := strings.Join(args[1:], " ")
+	log.Printf("[cmd] /add id=%s name=%q from user=%d", id, display, m.From.ID)
 	username := m.From.Username
 	if username == "" {
 		username = strings.TrimSpace(m.From.FirstName + " " + m.From.LastName)
@@ -175,6 +177,7 @@ func (t *Tracker) cmdRemove(ctx context.Context, b *bot.Bot, update *models.Upda
 		return
 	}
 	id := shortID(args)
+	log.Printf("[cmd] /remove id=%s from user=%d", id, m.From.ID)
 
 	t.mu.Lock()
 	t.chatID = m.Chat.ID
@@ -300,6 +303,7 @@ func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) 
 	t.timezone = loc
 	t.saveState()
 	t.mu.Unlock()
+	log.Printf("[tz] set to %s", loc.String())
 
 	now := time.Now().In(loc).Format("15:04:05")
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -349,6 +353,7 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 	// Driver: check if this user is waiting.
 	if d, ok := t.drivers[m.From.ID]; ok && d.Waiting && time.Now().Before(d.Expiry) {
 		if loc.LivePeriod > 0 {
+			log.Printf("[driver] live location received from user=%d at %.5f,%.5f", m.From.ID, loc.Latitude, loc.Longitude)
 			d.Pos = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
 			d.MsgID = m.ID
 			d.Waiting = false
@@ -379,6 +384,7 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 
 	// Landing: expecting a static location pin.
 	if t.waitingLanding && time.Now().Before(t.landingExpiry) {
+		log.Printf("[landing] location set at %.5f,%.5f by user=%d", loc.Latitude, loc.Longitude, m.From.ID)
 		t.landing = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
 		t.waitingLanding = false
 		kb := t.keyboard()
@@ -396,6 +402,7 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 
 	// Area: expecting center location.
 	if t.waitingArea && time.Now().Before(t.areaExpiry) {
+		log.Printf("[area] center set at %.5f,%.5f radius=%dkm by user=%d", loc.Latitude, loc.Longitude, t.trackAreaRadius, m.From.ID)
 		t.trackArea = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
 		t.waitingArea = false
 		// Remove previously auto-discovered entries when area changes.
@@ -469,6 +476,7 @@ func (t *Tracker) cmdAreaOff(ctx context.Context, b *bot.Bot, update *models.Upd
 // --- Core logic used by both command and callback handlers ---
 
 func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64) {
+	log.Printf("[session] reset chat=%d", chatID)
 	t.mu.Lock()
 	t.stopTracking()
 	t.tracking = make(map[string]*TrackInfo)
@@ -522,8 +530,11 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.chatID = chatID
 	kb := t.keyboard()
 	t.saveState()
+	count := len(t.tracking)
+	hasArea := t.trackArea != nil
 	t.mu.Unlock()
 
+	log.Printf("[tracking] ON: %d pilots, area=%v, chat=%d", count, hasArea, chatID)
 	go t.runClient(stopCh)
 	go t.sendUpdates(stopCh)
 
@@ -554,6 +565,7 @@ func (t *Tracker) execTrackOff(ctx context.Context, b *bot.Bot, chatID int64) {
 	kb := t.keyboard()
 	t.saveState()
 	t.mu.Unlock()
+	log.Printf("[tracking] OFF chat=%d", chatID)
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
@@ -672,6 +684,7 @@ func (t *Tracker) execArea(ctx context.Context, b *bot.Bot, chatID int64, radius
 }
 
 func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) {
+	log.Printf("[area] off chat=%d", chatID)
 	t.mu.Lock()
 	t.trackArea = nil
 	t.waitingArea = false
@@ -721,6 +734,7 @@ func (t *Tracker) execDriver(ctx context.Context, b *bot.Bot, chatID int64, user
 	}
 	t.chatID = chatID
 	t.mu.Unlock()
+	log.Printf("[driver] waiting for location from user=%d @%s", userID, username)
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: chatID,
@@ -783,6 +797,7 @@ func (t *Tracker) driverWaitTimeout(gen int, userID int64, chatID int64, usernam
 }
 
 func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, userID int64) {
+	log.Printf("[driver] off user=%d", userID)
 	t.mu.Lock()
 	_, was := t.drivers[userID]
 	delete(t.drivers, userID)
@@ -803,6 +818,7 @@ func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, u
 }
 
 func (t *Tracker) execPickup(ctx context.Context, b *bot.Bot, id string) {
+	log.Printf("[pickup] id=%s", id)
 	t.mu.Lock()
 	chatID := t.chatID
 	info, ok := t.tracking[id]

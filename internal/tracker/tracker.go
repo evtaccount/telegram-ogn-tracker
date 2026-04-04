@@ -171,6 +171,7 @@ func (t *Tracker) updateFilter() {
 	} else {
 		t.aprs.Filter = ""
 	}
+	log.Printf("[filter] updated: %q (ids=%d, area=%v)", t.aprs.Filter, len(ids), t.trackArea != nil)
 	if t.trackingOn {
 		t.aprs.Disconnect()
 	}
@@ -316,11 +317,6 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 }
 
 func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
-	if update.Message != nil {
-		log.Printf("DefaultHandler: text=%q, chat=%d, type=%s", update.Message.Text, update.Message.Chat.ID, update.Message.Chat.Type)
-	} else {
-		log.Printf("DefaultHandler: msg=%v, cb=%v, edited=%v", update.Message != nil, update.CallbackQuery != nil, update.EditedMessage != nil)
-	}
 	// Handle pickup callback queries (dynamic IDs, can't use exact match).
 	if update.CallbackQuery != nil {
 		cq := update.CallbackQuery
