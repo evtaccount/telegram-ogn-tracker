@@ -544,7 +544,10 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 				break
 			}
 			// Simulate /add without arguments — initiate DM flow.
-			t.cmdAdd(ctx, b, &models.Update{Message: m})
+			// Override text so commandArgs() returns "" (no spurious arg).
+			fakeMsgCopy := *m
+			fakeMsgCopy.Text = "/add"
+			t.cmdAdd(ctx, b, &models.Update{Message: &fakeMsgCopy})
 		case "▶️ Старт":
 			if !t.requireSession(ctx, b, chatID) {
 				break

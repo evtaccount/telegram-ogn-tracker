@@ -1055,7 +1055,7 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 
 	text := "Сессия сброшена. Пилоты сохранены."
 	if wipePilots {
-		text = "Сессия сброшена. Все пилоты удалены. Используйте /add для начала."
+		text = "Сессия сброшена. Все пилоты удалены. Используйте /start для начала."
 	}
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
