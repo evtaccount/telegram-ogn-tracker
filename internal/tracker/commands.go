@@ -1046,6 +1046,12 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 	t.session = newSession
 	t.updateFilter()
 	t.saveState()
+	var markup models.ReplyMarkup
+	if wipePilots {
+		markup = &models.ReplyKeyboardRemove{RemoveKeyboard: true}
+	} else {
+		markup = t.session.replyKeyboard()
+	}
 	t.mu.Unlock()
 
 	text := "Сессия сброшена. Пилоты сохранены."
@@ -1053,8 +1059,9 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 		text = "Сессия сброшена. Все пилоты удалены. Используйте /add для начала."
 	}
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: chatID,
-		Text:   text,
+		ChatID:      chatID,
+		Text:        text,
+		ReplyMarkup: markup,
 	}); err != nil {
 		log.Printf("failed to send session_reset message: %v", err)
 	}
