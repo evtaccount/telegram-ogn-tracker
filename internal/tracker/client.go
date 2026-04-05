@@ -536,3 +536,179 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		}
 	}
 }
+
+// --- Radar mode ---
+
+// runRadarClient connects to OGN APRS and collects all positions in the area.
+// Unlike runClient, it does not do landing detection or modify session.Tracking.
+func (t *Tracker) runRadarClient(stopCh <-chan struct{}) {
+	log.Println("Radar client started")
+	for {
+		select {
+		case <-stopCh:
+			log.Println("Radar client stopped")
+			return
+		default:
+		}
+
+		err := t.aprs.Run(func(line string) {
+			msg, err := parser.ParsePosition(line)
+			if err != nil {
+				return
+			}
+			id := shortID(msg.Callsign)
+
+			t.mu.Lock()
+			s := t.session
+			if s == nil || !s.RadarOn {
+				t.mu.Unlock()
+				return
+			}
+			entry, ok := s.RadarEntries[id]
+			if !ok {
+				entry = &RadarEntry{DDBInfo: formatDDBInfo(t.devices, id)}
+				s.RadarEntries[id] = entry
+			}
+			entry.Position = msg
+			entry.LastSeen = time.Now()
+			entry.AircraftType = msg.AircraftType
+			t.mu.Unlock()
+		}, false)
+		if err != nil {
+			select {
+			case <-stopCh:
+				log.Println("Radar client stopped")
+				return
+			default:
+				log.Printf("Radar client error: %v", err)
+				time.Sleep(reconnectDelay)
+			}
+		}
+	}
+}
+
+// sendRadarUpdates periodically sends/edits a summary message with all aircraft in the area.
+func (t *Tracker) sendRadarUpdates(stopCh <-chan struct{}) {
+	ticker := time.NewTicker(updateInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+		}
+
+		t.mu.Lock()
+		s := t.session
+		if s == nil || !s.RadarOn {
+			t.mu.Unlock()
+			continue
+		}
+		chatID := s.ChatID
+		radarMsgID := s.RadarMsgID
+		center := s.TrackArea
+		radius := s.TrackAreaRadius
+		tz := s.tz()
+
+		// Prune stale entries.
+		now := time.Now()
+		for id, e := range s.RadarEntries {
+			if now.Sub(e.LastSeen) > staleThreshold {
+				delete(s.RadarEntries, id)
+			}
+		}
+
+		// Snapshot entries.
+		lines := make([]radarLine, 0, len(s.RadarEntries))
+		for id, e := range s.RadarEntries {
+			lines = append(lines, radarLine{id, *e})
+		}
+		b := t.bot
+		t.mu.Unlock()
+
+		if b == nil {
+			continue
+		}
+
+		// Sort by altitude descending.
+		sort.Slice(lines, func(i, j int) bool {
+			if lines[i].entry.Position == nil {
+				return false
+			}
+			if lines[j].entry.Position == nil {
+				return true
+			}
+			return lines[i].entry.Position.Altitude > lines[j].entry.Position.Altitude
+		})
+
+		summary := t.buildRadarSummary(lines, center, radius, tz)
+		ctx := context.Background()
+
+		if radarMsgID != 0 {
+			if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+				ChatID:    chatID,
+				MessageID: radarMsgID,
+				Text:      summary,
+			}); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+				log.Printf("failed to edit radar summary: %v", err)
+			}
+		} else {
+			msg, err := b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: chatID,
+				Text:   summary,
+			})
+			if err != nil {
+				log.Printf("failed to send radar summary: %v", err)
+			} else {
+				t.mu.Lock()
+				if t.session != nil {
+					t.session.RadarMsgID = msg.ID
+				}
+				t.mu.Unlock()
+			}
+		}
+	}
+}
+
+type radarLine struct {
+	id    string
+	entry RadarEntry
+}
+
+func (t *Tracker) buildRadarSummary(lines []radarLine, center *Coordinates, radius int, tz *time.Location) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "📡 Радар: %d ВС в зоне %dкм\n", len(lines), radius)
+
+	for _, l := range lines {
+		pos := l.entry.Position
+		if pos == nil {
+			continue
+		}
+		sb.WriteString("\n")
+		sb.WriteString(l.id)
+		if name, ok := aircraftTypes[l.entry.AircraftType]; ok && l.entry.AircraftType > 0 {
+			sb.WriteString(" [")
+			sb.WriteString(name)
+			sb.WriteString("]")
+		}
+		if l.entry.DDBInfo != "" {
+			sb.WriteString(" — ")
+			sb.WriteString(l.entry.DDBInfo)
+		}
+		dist, _ := distanceAndBearing(center.Latitude, center.Longitude, pos.Latitude, pos.Longitude)
+		fmt.Fprintf(&sb, "\n  %.0fм ↕ | %.0fкм/ч | %.1fкм | %s",
+			pos.Altitude, pos.GroundSpeed, dist,
+			l.entry.LastSeen.In(tz).Format("15:04:05"))
+
+		// Truncate to fit Telegram message limit.
+		if sb.Len() > 3900 {
+			fmt.Fprintf(&sb, "\n\n…и ещё ВС")
+			break
+		}
+	}
+
+	if len(lines) == 0 {
+		sb.WriteString("\nНет ВС в зоне")
+	}
+	return sb.String()
+}

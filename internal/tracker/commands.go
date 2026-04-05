@@ -88,6 +88,7 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	// No session or empty session — create fresh.
 	if t.session != nil {
 		t.session.stopTracking(t.aprs)
+		t.session.stopRadar(t.aprs)
 	}
 	t.session = &GroupSession{
 		ChatID:   m.Chat.ID,
@@ -729,6 +730,7 @@ func (t *Tracker) cmdDebugWipe(ctx context.Context, b *bot.Bot, update *models.U
 	t.mu.Lock()
 	if t.session != nil {
 		t.session.stopTracking(t.aprs)
+		t.session.stopRadar(t.aprs)
 	}
 	t.session = nil
 	t.users = make(map[int64]*UserInfo)
@@ -1026,6 +1028,7 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 	t.mu.Lock()
 	if t.session != nil {
 		t.session.stopTracking(t.aprs)
+		t.session.stopRadar(t.aprs)
 	}
 	newSession := &GroupSession{
 		ChatID:   chatID,
@@ -1078,6 +1081,16 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 			Text:   "Нет адресов. Используйте /add <id> или /area.",
 		}); err != nil {
 			log.Printf("failed to send no addresses message: %v", err)
+		}
+		return
+	}
+	if s.RadarOn {
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "Остановите радар перед запуском трекинга.",
+		}); err != nil {
+			log.Printf("failed to send radar conflict message: %v", err)
 		}
 		return
 	}
@@ -1302,6 +1315,12 @@ func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) {
 	log.Printf("[area] off chat=%d", chatID)
 	t.mu.Lock()
 	s := t.session
+	// Stop radar if it's running — radar requires an area.
+	if s.RadarOn {
+		s.stopRadar(t.aprs)
+		t.aprs = client.New("N0CALL", "")
+		t.aprs.Logger = log.Default()
+	}
 	s.TrackArea = nil
 	s.WaitingArea = false
 	// Remove auto-discovered entries.
@@ -1321,6 +1340,93 @@ func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) {
 		ReplyMarkup: kb,
 	}); err != nil {
 		log.Printf("failed to confirm area off: %v", err)
+	}
+}
+
+// --- Radar mode commands ---
+
+func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64) {
+	t.mu.Lock()
+	s := t.session
+	if s.TrackArea == nil {
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "Сначала задайте зону: /area",
+		}); err != nil {
+			log.Printf("failed to send radar no-area message: %v", err)
+		}
+		return
+	}
+	if s.TrackingOn {
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "Остановите трекинг перед включением радара.",
+		}); err != nil {
+			log.Printf("failed to send radar conflict message: %v", err)
+		}
+		return
+	}
+	if s.RadarOn {
+		kb := s.replyKeyboard()
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:      chatID,
+			Text:        "Радар уже включён",
+			ReplyMarkup: kb,
+		}); err != nil {
+			log.Printf("failed to confirm radar on: %v", err)
+		}
+		return
+	}
+
+	s.RadarOn = true
+	s.RadarEntries = make(map[string]*RadarEntry)
+	s.RadarMsgID = 0
+
+	filter := client.RangeFilter(s.TrackArea.Latitude, s.TrackArea.Longitude, s.TrackAreaRadius)
+	t.aprs = client.New("N0CALL", filter)
+	t.aprs.Logger = log.Default()
+	s.RadarStopCh = make(chan struct{})
+	stopCh := s.RadarStopCh
+	kb := s.replyKeyboard()
+	t.mu.Unlock()
+
+	log.Printf("[radar] ON: area=%.5f,%.5f r=%dkm chat=%d",
+		s.TrackArea.Latitude, s.TrackArea.Longitude, s.TrackAreaRadius, chatID)
+	go t.runRadarClient(stopCh)
+	go t.sendRadarUpdates(stopCh)
+
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        fmt.Sprintf("📡 Радар включён (зона %dкм)", s.TrackAreaRadius),
+		ReplyMarkup: kb,
+	}); err != nil {
+		log.Printf("failed to confirm radar on: %v", err)
+	}
+}
+
+func (t *Tracker) execRadarOff(ctx context.Context, b *bot.Bot, chatID int64) {
+	t.mu.Lock()
+	s := t.session
+	if !s.RadarOn {
+		t.mu.Unlock()
+		return
+	}
+	s.stopRadar(t.aprs)
+	t.aprs = client.New("N0CALL", "")
+	t.aprs.Logger = log.Default()
+	kb := s.replyKeyboard()
+	t.mu.Unlock()
+
+	log.Printf("[radar] OFF chat=%d", chatID)
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        "📡 Радар выключен",
+		ReplyMarkup: kb,
+	}); err != nil {
+		log.Printf("failed to confirm radar off: %v", err)
 	}
 }
 
@@ -1671,6 +1777,7 @@ func (t *Tracker) cbStartFresh(ctx context.Context, b *bot.Bot, update *models.U
 	chatID := t.sessionChatID()
 	if t.session != nil {
 		t.session.stopTracking(t.aprs)
+		t.session.stopRadar(t.aprs)
 	}
 	t.session = &GroupSession{
 		ChatID:   chatID,

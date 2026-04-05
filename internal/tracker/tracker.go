@@ -57,6 +57,14 @@ func (ti *TrackInfo) DisplayName() string {
 	return ti.Username
 }
 
+// RadarEntry holds a single aircraft observation during radar mode.
+type RadarEntry struct {
+	Position     *parser.PositionMessage
+	LastSeen     time.Time
+	AircraftType int
+	DDBInfo      string
+}
+
 // Coordinates represents a geographic point (WGS84).
 type Coordinates struct {
 	Latitude  float64
@@ -89,6 +97,11 @@ type GroupSession struct {
 	LandingExpiry  time.Time
 	WaitingArea    bool
 	AreaExpiry     time.Time
+	// Radar mode (runtime only):
+	RadarOn      bool
+	RadarEntries map[string]*RadarEntry
+	RadarMsgID   int
+	RadarStopCh  chan struct{}
 }
 
 // tz returns the session's timezone, defaulting to UTC.
@@ -106,6 +119,15 @@ func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
 		return nil
 	}
 	hasContent := len(s.Tracking) > 0 || s.TrackArea != nil
+
+	if s.RadarOn {
+		return &models.ReplyKeyboardMarkup{
+			Keyboard: [][]models.KeyboardButton{
+				{{Text: "⏹ Радар стоп"}},
+			},
+			ResizeKeyboard: true,
+		}
+	}
 
 	if s.TrackingOn {
 		areaText := "📡 Зона"
@@ -126,22 +148,26 @@ func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
 			ResizeKeyboard: true,
 		}
 	}
-	var buttons []models.KeyboardButton
+	var rows [][]models.KeyboardButton
 	if hasContent {
-		buttons = []models.KeyboardButton{
+		row1 := []models.KeyboardButton{
 			{Text: "▶️ Старт"},
 			{Text: "📋 Список"},
 			{Text: "🔄 Завершить"},
 		}
+		rows = append(rows, row1)
+		if s.TrackArea != nil {
+			rows = append(rows, []models.KeyboardButton{{Text: "📡 Радар"}})
+		}
 	} else {
-		buttons = []models.KeyboardButton{
+		rows = append(rows, []models.KeyboardButton{
 			{Text: "➕ Добавить"},
 			{Text: "📡 Зона"},
 			{Text: "🔄 Завершить"},
-		}
+		})
 	}
 	return &models.ReplyKeyboardMarkup{
-		Keyboard:       [][]models.KeyboardButton{buttons},
+		Keyboard:       rows,
 		ResizeKeyboard: true,
 	}
 }
@@ -181,6 +207,22 @@ func (s *GroupSession) stopTracking(aprs *client.Client) {
 	if s.StopCh != nil {
 		close(s.StopCh)
 		s.StopCh = nil
+	}
+	aprs.Disconnect()
+}
+
+// stopRadar disables radar mode and signals goroutines to exit.
+// Must be called with t.mu held. Requires aprs client to disconnect.
+func (s *GroupSession) stopRadar(aprs *client.Client) {
+	if s == nil || !s.RadarOn {
+		return
+	}
+	s.RadarOn = false
+	s.RadarMsgID = 0
+	s.RadarEntries = nil
+	if s.RadarStopCh != nil {
+		close(s.RadarStopCh)
+		s.RadarStopCh = nil
 	}
 	aprs.Disconnect()
 }
@@ -572,6 +614,14 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 		case "🚗 Водитель":
 			if t.requireSession(ctx, b, chatID) {
 				t.execDriver(ctx, b, chatID, m.From.ID, m.From.Username)
+			}
+		case "📡 Радар":
+			if t.requireSession(ctx, b, chatID) {
+				t.execRadarOn(ctx, b, chatID)
+			}
+		case "⏹ Радар стоп":
+			if t.requireSession(ctx, b, chatID) {
+				t.execRadarOff(ctx, b, chatID)
 			}
 		case "🔄 Завершить":
 			if t.requireSession(ctx, b, chatID) {
