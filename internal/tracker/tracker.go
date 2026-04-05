@@ -135,6 +135,8 @@ func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
 		}
 	} else {
 		buttons = []models.KeyboardButton{
+			{Text: "➕ Добавить"},
+			{Text: "📡 Зона"},
 			{Text: "🔄 Завершить"},
 		}
 	}
@@ -537,6 +539,12 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 	if m.Text != "" && isGroupChat(m.Chat) {
 		chatID := m.Chat.ID
 		switch m.Text {
+		case "➕ Добавить":
+			if !t.requireSession(ctx, b, chatID) {
+				break
+			}
+			// Simulate /add without arguments — initiate DM flow.
+			t.cmdAdd(ctx, b, &models.Update{Message: m})
 		case "▶️ Старт":
 			if !t.requireSession(ctx, b, chatID) {
 				break
