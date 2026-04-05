@@ -106,9 +106,6 @@ func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
 		return nil
 	}
 	hasContent := len(s.Tracking) > 0 || s.TrackArea != nil
-	if !hasContent {
-		return nil
-	}
 
 	if s.TrackingOn {
 		areaText := "📡 Зона"
@@ -129,14 +126,20 @@ func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
 			ResizeKeyboard: true,
 		}
 	}
+	var buttons []models.KeyboardButton
+	if hasContent {
+		buttons = []models.KeyboardButton{
+			{Text: "▶️ Старт"},
+			{Text: "📋 Список"},
+			{Text: "🔄 Завершить"},
+		}
+	} else {
+		buttons = []models.KeyboardButton{
+			{Text: "🔄 Завершить"},
+		}
+	}
 	return &models.ReplyKeyboardMarkup{
-		Keyboard: [][]models.KeyboardButton{
-			{
-				{Text: "▶️ Старт"},
-				{Text: "📋 Список"},
-				{Text: "🔄 Завершить"},
-			},
-		},
+		Keyboard:       [][]models.KeyboardButton{buttons},
 		ResizeKeyboard: true,
 	}
 }

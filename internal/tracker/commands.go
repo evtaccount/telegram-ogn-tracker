@@ -94,15 +94,14 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 		Tracking: make(map[string]*TrackInfo),
 		Drivers:  make(map[int64]*DriverInfo),
 	}
+	kb := t.session.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: m.Chat.ID,
-		Text:   "Сессия начата. Используйте /add <id> или /area.",
-		ReplyMarkup: &models.ReplyKeyboardRemove{
-			RemoveKeyboard: true,
-		},
+		ChatID:      m.Chat.ID,
+		Text:        "Сессия начата. Используйте /add <id> или /area.",
+		ReplyMarkup: kb,
 	}); err != nil {
 		log.Printf("failed to send start message: %v", err)
 	}
