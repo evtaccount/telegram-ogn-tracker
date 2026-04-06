@@ -1345,7 +1345,7 @@ func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) {
 
 // --- Radar mode commands ---
 
-func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64) {
+func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64, radiusKm int) {
 	t.mu.Lock()
 	s := t.session
 	if s.TrackArea == nil {
@@ -1381,11 +1381,23 @@ func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64) {
 		return
 	}
 
+	// Use provided radius, fall back to area radius, then default.
+	if radiusKm <= 0 {
+		radiusKm = s.TrackAreaRadius
+	}
+	if radiusKm <= 0 {
+		radiusKm = defaultAreaRadius
+	}
+	if radiusKm > maxAreaRadius {
+		radiusKm = maxAreaRadius
+	}
+
 	s.RadarOn = true
+	s.RadarRadius = radiusKm
 	s.RadarEntries = make(map[string]*RadarEntry)
 	s.RadarMsgID = 0
 
-	filter := client.RangeFilter(s.TrackArea.Latitude, s.TrackArea.Longitude, s.TrackAreaRadius)
+	filter := client.RangeFilter(s.TrackArea.Latitude, s.TrackArea.Longitude, radiusKm)
 	t.aprs = client.New("N0CALL", filter)
 	t.aprs.Logger = log.Default()
 	s.RadarStopCh = make(chan struct{})
@@ -1394,13 +1406,13 @@ func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Unlock()
 
 	log.Printf("[radar] ON: area=%.5f,%.5f r=%dkm chat=%d",
-		s.TrackArea.Latitude, s.TrackArea.Longitude, s.TrackAreaRadius, chatID)
+		s.TrackArea.Latitude, s.TrackArea.Longitude, radiusKm, chatID)
 	go t.runRadarClient(stopCh)
 	go t.sendRadarUpdates(stopCh)
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
-		Text:        fmt.Sprintf("📡 Радар включён (зона %dкм)", s.TrackAreaRadius),
+		Text:        fmt.Sprintf("📡 Радар включён (зона %dкм)", radiusKm),
 		ReplyMarkup: kb,
 	}); err != nil {
 		log.Printf("failed to confirm radar on: %v", err)
@@ -1427,6 +1439,73 @@ func (t *Tracker) execRadarOff(ctx context.Context, b *bot.Bot, chatID int64) {
 		ReplyMarkup: kb,
 	}); err != nil {
 		log.Printf("failed to confirm radar off: %v", err)
+	}
+}
+
+func (t *Tracker) cmdRadar(ctx context.Context, b *bot.Bot, update *models.Update) {
+	m := update.Message
+	if m.From == nil || !t.isTrusted(m.From.ID) {
+		return
+	}
+	if !t.requireGroupSession(ctx, b, m) {
+		return
+	}
+	var radius int
+	if arg := commandArgs(m.Text); arg != "" {
+		if r, err := strconv.Atoi(arg); err == nil && r > 0 {
+			radius = r
+		}
+	}
+	// If radar is already running and radius is specified, just change the radius.
+	t.mu.Lock()
+	radarOn := t.session != nil && t.session.RadarOn
+	t.mu.Unlock()
+	if radarOn && radius > 0 {
+		t.execRadarSetRadius(ctx, b, m.Chat.ID, radius)
+		return
+	}
+	t.execRadarOn(ctx, b, m.Chat.ID, radius)
+}
+
+// execRadarSetRadius changes the radar radius while radar is running.
+func (t *Tracker) execRadarSetRadius(ctx context.Context, b *bot.Bot, chatID int64, radiusKm int) {
+	if radiusKm <= 0 {
+		radiusKm = defaultAreaRadius
+	}
+	if radiusKm > maxAreaRadius {
+		radiusKm = maxAreaRadius
+	}
+	t.mu.Lock()
+	s := t.session
+	if s == nil || !s.RadarOn {
+		t.mu.Unlock()
+		return
+	}
+	s.stopRadar(t.aprs)
+
+	s.RadarOn = true
+	s.RadarRadius = radiusKm
+	s.RadarEntries = make(map[string]*RadarEntry)
+	s.RadarMsgID = 0
+
+	filter := client.RangeFilter(s.TrackArea.Latitude, s.TrackArea.Longitude, radiusKm)
+	t.aprs = client.New("N0CALL", filter)
+	t.aprs.Logger = log.Default()
+	s.RadarStopCh = make(chan struct{})
+	stopCh := s.RadarStopCh
+	kb := s.replyKeyboard()
+	t.mu.Unlock()
+
+	log.Printf("[radar] radius changed to %dkm chat=%d", radiusKm, chatID)
+	go t.runRadarClient(stopCh)
+	go t.sendRadarUpdates(stopCh)
+
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        fmt.Sprintf("📡 Радиус радара: %dкм", radiusKm),
+		ReplyMarkup: kb,
+	}); err != nil {
+		log.Printf("failed to confirm radar radius: %v", err)
 	}
 }
 

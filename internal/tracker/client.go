@@ -607,7 +607,7 @@ func (t *Tracker) sendRadarUpdates(stopCh <-chan struct{}) {
 		chatID := s.ChatID
 		radarMsgID := s.RadarMsgID
 		center := s.TrackArea
-		radius := s.TrackAreaRadius
+		radius := s.RadarRadius
 		tz := s.tz()
 
 		// Prune stale entries.

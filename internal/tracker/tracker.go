@@ -99,6 +99,7 @@ type GroupSession struct {
 	AreaExpiry     time.Time
 	// Radar mode (runtime only):
 	RadarOn      bool
+	RadarRadius  int // radar-specific radius (may differ from TrackAreaRadius)
 	RadarEntries map[string]*RadarEntry
 	RadarMsgID   int
 	RadarStopCh  chan struct{}
@@ -124,6 +125,12 @@ func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
 		return &models.ReplyKeyboardMarkup{
 			Keyboard: [][]models.KeyboardButton{
 				{{Text: "⏹ Радар стоп"}},
+				{
+					{Text: "📡 25км"},
+					{Text: "📡 50км"},
+					{Text: "📡 100км"},
+					{Text: "📡 200км"},
+				},
 			},
 			ResizeKeyboard: true,
 		}
@@ -474,6 +481,7 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "driver_off", bot.MatchTypeCommand, t.cmdDriverOff)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "area", bot.MatchTypeCommand, t.cmdArea)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "area_off", bot.MatchTypeCommand, t.cmdAreaOff)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "radar", bot.MatchTypeCommand, t.cmdRadar)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "tz", bot.MatchTypeCommand, t.cmdTz)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "help", bot.MatchTypeCommand, t.cmdHelp)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "debug_wipe", bot.MatchTypeCommand, t.cmdDebugWipe)
@@ -617,11 +625,27 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			}
 		case "📡 Радар":
 			if t.requireSession(ctx, b, chatID) {
-				t.execRadarOn(ctx, b, chatID)
+				t.execRadarOn(ctx, b, chatID, 0)
 			}
 		case "⏹ Радар стоп":
 			if t.requireSession(ctx, b, chatID) {
 				t.execRadarOff(ctx, b, chatID)
+			}
+		case "📡 25км":
+			if t.requireSession(ctx, b, chatID) {
+				t.execRadarSetRadius(ctx, b, chatID, 25)
+			}
+		case "📡 50км":
+			if t.requireSession(ctx, b, chatID) {
+				t.execRadarSetRadius(ctx, b, chatID, 50)
+			}
+		case "📡 100км":
+			if t.requireSession(ctx, b, chatID) {
+				t.execRadarSetRadius(ctx, b, chatID, 100)
+			}
+		case "📡 200км":
+			if t.requireSession(ctx, b, chatID) {
+				t.execRadarSetRadius(ctx, b, chatID, 200)
 			}
 		case "🔄 Завершить":
 			if t.requireSession(ctx, b, chatID) {
