@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -98,11 +99,13 @@ type GroupSession struct {
 	WaitingArea    bool
 	AreaExpiry     time.Time
 	// Radar mode (runtime only):
-	RadarOn      bool
-	RadarRadius  int // radar-specific radius (may differ from TrackAreaRadius)
-	RadarEntries map[string]*RadarEntry
-	RadarMsgID   int
-	RadarStopCh  chan struct{}
+	RadarOn            bool
+	RadarRadius        int // radar-specific radius (may differ from TrackAreaRadius)
+	RadarEntries       map[string]*RadarEntry
+	RadarMsgID         int
+	RadarStopCh        chan struct{}
+	WaitingRadarRadius bool
+	RadarRadiusExpiry  time.Time
 }
 
 // tz returns the session's timezone, defaulting to UTC.
@@ -124,12 +127,9 @@ func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
 	if s.RadarOn {
 		return &models.ReplyKeyboardMarkup{
 			Keyboard: [][]models.KeyboardButton{
-				{{Text: "⏹ Радар стоп"}},
 				{
-					{Text: "📡 25км"},
-					{Text: "📡 50км"},
-					{Text: "📡 100км"},
-					{Text: "📡 200км"},
+					{Text: "⏹ Радар стоп"},
+					{Text: "📡 Радиус"},
 				},
 			},
 			ResizeKeyboard: true,
@@ -227,6 +227,7 @@ func (s *GroupSession) stopRadar(aprs *client.Client) {
 	s.RadarOn = false
 	s.RadarMsgID = 0
 	s.RadarEntries = nil
+	s.WaitingRadarRadius = false
 	if s.RadarStopCh != nil {
 		close(s.RadarStopCh)
 		s.RadarStopCh = nil
@@ -585,6 +586,29 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 		return
 	}
 
+	// Handle pending radar radius input (group only).
+	if m.Text != "" && isGroupChat(m.Chat) && !strings.HasPrefix(m.Text, "/") {
+		t.mu.Lock()
+		waiting := t.session != nil && t.session.WaitingRadarRadius && time.Now().Before(t.session.RadarRadiusExpiry)
+		if waiting {
+			t.session.WaitingRadarRadius = false
+			chatID := m.Chat.ID
+			t.mu.Unlock()
+			if r, err := strconv.Atoi(strings.TrimSpace(m.Text)); err != nil || r <= 0 || r > maxAreaRadius {
+				if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+					ChatID: chatID,
+					Text:   fmt.Sprintf("Укажите число от 1 до %d", maxAreaRadius),
+				}); err != nil {
+					log.Printf("failed to send invalid radar radius message: %v", err)
+				}
+			} else {
+				t.execRadarSetRadius(ctx, b, chatID, r)
+			}
+			return
+		}
+		t.mu.Unlock()
+	}
+
 	// Route reply keyboard button presses (group only).
 	if m.Text != "" && isGroupChat(m.Chat) {
 		chatID := m.Chat.ID
@@ -631,21 +655,9 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			if t.requireSession(ctx, b, chatID) {
 				t.execRadarOff(ctx, b, chatID)
 			}
-		case "📡 25км":
+		case "📡 Радиус":
 			if t.requireSession(ctx, b, chatID) {
-				t.execRadarSetRadius(ctx, b, chatID, 25)
-			}
-		case "📡 50км":
-			if t.requireSession(ctx, b, chatID) {
-				t.execRadarSetRadius(ctx, b, chatID, 50)
-			}
-		case "📡 100км":
-			if t.requireSession(ctx, b, chatID) {
-				t.execRadarSetRadius(ctx, b, chatID, 100)
-			}
-		case "📡 200км":
-			if t.requireSession(ctx, b, chatID) {
-				t.execRadarSetRadius(ctx, b, chatID, 200)
+				t.execRadarAskRadius(ctx, b, chatID)
 			}
 		case "🔄 Завершить":
 			if t.requireSession(ctx, b, chatID) {

@@ -1452,9 +1452,26 @@ func (t *Tracker) cmdRadar(ctx context.Context, b *bot.Bot, update *models.Updat
 	}
 	var radius int
 	if arg := commandArgs(m.Text); arg != "" {
-		if r, err := strconv.Atoi(arg); err == nil && r > 0 {
-			radius = r
+		r, err := strconv.Atoi(arg)
+		if err != nil {
+			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: m.Chat.ID,
+				Text:   fmt.Sprintf("Неверный радиус. Используйте /radar <число> (1–%d)", maxAreaRadius),
+			}); err != nil {
+				log.Printf("failed to send invalid radar arg message: %v", err)
+			}
+			return
 		}
+		if r <= 0 || r > maxAreaRadius {
+			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: m.Chat.ID,
+				Text:   fmt.Sprintf("Радиус должен быть от 1 до %d км", maxAreaRadius),
+			}); err != nil {
+				log.Printf("failed to send radar range message: %v", err)
+			}
+			return
+		}
+		radius = r
 	}
 	// If radar is already running and radius is specified, just change the radius.
 	t.mu.Lock()
@@ -1465,6 +1482,26 @@ func (t *Tracker) cmdRadar(ctx context.Context, b *bot.Bot, update *models.Updat
 		return
 	}
 	t.execRadarOn(ctx, b, m.Chat.ID, radius)
+}
+
+// execRadarAskRadius prompts the user to enter a new radius for radar mode.
+func (t *Tracker) execRadarAskRadius(ctx context.Context, b *bot.Bot, chatID int64) {
+	t.mu.Lock()
+	s := t.session
+	if s == nil || !s.RadarOn {
+		t.mu.Unlock()
+		return
+	}
+	s.WaitingRadarRadius = true
+	s.RadarRadiusExpiry = time.Now().Add(waitTimeout)
+	t.mu.Unlock()
+
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: chatID,
+		Text:   fmt.Sprintf("Введите радиус в км (1–%d). Текущий: %dкм", maxAreaRadius, s.RadarRadius),
+	}); err != nil {
+		log.Printf("failed to send radar radius prompt: %v", err)
+	}
 }
 
 // execRadarSetRadius changes the radar radius while radar is running.
