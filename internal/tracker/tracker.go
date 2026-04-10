@@ -26,17 +26,6 @@ const (
 	StatusPickedUp
 )
 
-func (s PilotStatus) Emoji() string {
-	switch s {
-	case StatusLanded:
-		return "🪂"
-	case StatusPickedUp:
-		return "✅"
-	default:
-		return "✈️"
-	}
-}
-
 // TrackInfo holds tracking state for a single pilot/aircraft.
 type TrackInfo struct {
 	MessageID      int                     // Telegram message ID для live-локации на карте
@@ -46,9 +35,26 @@ type TrackInfo struct {
 	LastUpdate     time.Time
 	Status         PilotStatus
 	LandingTime    time.Time
-	LowSpeedSince time.Time // начало периода низкой скорости для детекции посадки
-	AutoDiscovered bool      // обнаружен автоматически через зону отслеживания
-	OwnerUserID    int64     // Telegram user ID владельца трекера
+	LandingConfirmed bool      // true if pilot confirmed landing via DM button
+	LowSpeedSince    time.Time // начало периода низкой скорости для детекции посадки
+	AutoDiscovered   bool      // обнаружен автоматически через зону отслеживания
+	OwnerUserID      int64     // Telegram user ID владельца трекера
+}
+
+// StatusEmoji returns an emoji reflecting the pilot's current state.
+// Confirmed landings get ✅, auto-detected (unconfirmed) get 🪂.
+func (ti *TrackInfo) StatusEmoji() string {
+	switch ti.Status {
+	case StatusLanded:
+		if ti.LandingConfirmed {
+			return "✅"
+		}
+		return "🪂"
+	case StatusPickedUp:
+		return "✅"
+	default:
+		return "✈️"
+	}
 }
 
 func (ti *TrackInfo) DisplayName() string {
@@ -197,7 +203,7 @@ func (t *Tracker) dmReplyKeyboard(userID int64) *models.ReplyKeyboardMarkup {
 	}
 	return &models.ReplyKeyboardMarkup{
 		Keyboard: [][]models.KeyboardButton{
-			{{Text: "📍 Посадка"}},
+			{{Text: "🪂 Сел"}, {Text: "📍 Посадка"}},
 		},
 		ResizeKeyboard: true,
 	}
@@ -578,6 +584,10 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 
 	// Handle DM text/buttons.
 	if m.Text != "" && isPrivateChat(m.Chat) && !strings.HasPrefix(m.Text, "/") {
+		if m.Text == "🪂 Сел" {
+			t.execDMConfirmLanding(ctx, b, m)
+			return
+		}
 		if m.Text == "📍 Посадка" {
 			t.execDMLanding(ctx, b, m)
 			return

@@ -41,8 +41,9 @@ type pilotState struct {
 	Username       string      `json:"username,omitempty"`
 	Status         PilotStatus `json:"status"`
 	LandingTime    time.Time   `json:"landing_time,omitempty"`
-	AutoDiscovered bool        `json:"auto_discovered,omitempty"`
-	OwnerUserID    int64       `json:"owner_user_id,omitempty"`
+	LandingConfirmed bool      `json:"landing_confirmed,omitempty"`
+	AutoDiscovered   bool      `json:"auto_discovered,omitempty"`
+	OwnerUserID      int64     `json:"owner_user_id,omitempty"`
 }
 
 // legacySessionState represents the old format (pre-Phase 1) for migration.
@@ -77,12 +78,13 @@ func (t *Tracker) saveState() {
 			ss.Tracking = make(map[string]*pilotState, len(s.Tracking))
 			for id, info := range s.Tracking {
 				ss.Tracking[id] = &pilotState{
-					Name:           info.Name,
-					Username:       info.Username,
-					Status:         info.Status,
-					LandingTime:    info.LandingTime,
-					AutoDiscovered: info.AutoDiscovered,
-					OwnerUserID:    info.OwnerUserID,
+					Name:             info.Name,
+					Username:         info.Username,
+					Status:           info.Status,
+					LandingTime:      info.LandingTime,
+					LandingConfirmed: info.LandingConfirmed,
+					AutoDiscovered:   info.AutoDiscovered,
+					OwnerUserID:      info.OwnerUserID,
 				}
 			}
 		}
@@ -215,12 +217,13 @@ func (t *Tracker) loadState() bool {
 	if len(ss.Tracking) > 0 {
 		for id, ps := range ss.Tracking {
 			session.Tracking[id] = &TrackInfo{
-				Name:           ps.Name,
-				Username:       ps.Username,
-				Status:         ps.Status,
-				LandingTime:    ps.LandingTime,
-				AutoDiscovered: ps.AutoDiscovered,
-				OwnerUserID:    ps.OwnerUserID,
+				Name:             ps.Name,
+				Username:         ps.Username,
+				Status:           ps.Status,
+				LandingTime:      ps.LandingTime,
+				LandingConfirmed: ps.LandingConfirmed,
+				AutoDiscovered:   ps.AutoDiscovered,
+				OwnerUserID:      ps.OwnerUserID,
 			}
 		}
 	}
