@@ -296,25 +296,63 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 	}
 }
 
-// execAddDirect adds a pilot by OGN ID directly from /add <id> [name] in a group.
+// execAddDirect adds a pilot by OGN ID directly from /add <id> [name] [@username] in a group.
+// If @username is provided, the bot links the pilot to that Telegram user for DM features.
+// If only a name is provided without @username, the bot cannot send DM to the pilot.
 func (t *Tracker) execAddDirect(ctx context.Context, b *bot.Bot, m *models.Message, args []string) {
 	id := shortID(args[0])
-	display := strings.Join(args[1:], " ")
-	log.Printf("[cmd] /add id=%s name=%q from user=%d", id, display, m.From.ID)
-	username := m.From.Username
-	if username == "" {
-		username = strings.TrimSpace(m.From.FirstName + " " + m.From.LastName)
+
+	// Parse remaining args: name tokens and optional @username.
+	var display string
+	var pilotUsername string
+	for _, arg := range args[1:] {
+		if strings.HasPrefix(arg, "@") {
+			pilotUsername = strings.TrimPrefix(arg, "@")
+		} else {
+			if display != "" {
+				display += " "
+			}
+			display += arg
+		}
 	}
+
+	// Determine the username for display and linking.
+	username := pilotUsername
+	if username == "" && display == "" {
+		// Legacy behavior: use adder's info when no name or @username given.
+		username = m.From.Username
+		if username == "" {
+			username = strings.TrimSpace(m.From.FirstName + " " + m.From.LastName)
+		}
+	}
+
+	log.Printf("[cmd] /add id=%s name=%q username=%q from user=%d", id, display, username, m.From.ID)
 
 	t.mu.Lock()
 	s := t.session
 	s.ChatID = m.Chat.ID
+
+	// Try to link to an existing user by @username.
+	var ownerUID int64
+	if pilotUsername != "" {
+		for _, u := range t.users {
+			if strings.EqualFold(u.Username, pilotUsername) {
+				u.OGNID = id
+				ownerUID = u.UserID
+				break
+			}
+		}
+	}
+
 	if info, ok := s.Tracking[id]; ok {
 		info.Name = display
 		info.Username = username
 		info.AutoDiscovered = false
+		if ownerUID != 0 {
+			info.OwnerUserID = ownerUID
+		}
 	} else {
-		s.Tracking[id] = &TrackInfo{Name: display, Username: username}
+		s.Tracking[id] = &TrackInfo{Name: display, Username: username, OwnerUserID: ownerUID}
 	}
 	t.updateFilter()
 
@@ -329,6 +367,9 @@ func (t *Tracker) execAddDirect(ctx context.Context, b *bot.Bot, m *models.Messa
 	text := "Добавлен " + id
 	if display != "" {
 		text += " (" + display + ")"
+	}
+	if pilotUsername != "" {
+		text += " @" + pilotUsername
 	}
 	text += ddbInfo
 
