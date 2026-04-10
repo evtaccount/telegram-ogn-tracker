@@ -649,21 +649,30 @@ func (t *Tracker) sendRadarUpdates(stopCh <-chan struct{}) {
 		})
 
 		summary := t.buildRadarSummary(lines, center, radius, tz)
+		kb := radarButtons(lines)
 		ctx := context.Background()
 
 		if radarMsgID != 0 {
-			if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+			ep := &bot.EditMessageTextParams{
 				ChatID:    chatID,
 				MessageID: radarMsgID,
 				Text:      summary,
-			}); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+			}
+			if kb != nil {
+				ep.ReplyMarkup = kb
+			}
+			if _, err := b.EditMessageText(ctx, ep); err != nil && !strings.Contains(err.Error(), "message is not modified") {
 				log.Printf("failed to edit radar summary: %v", err)
 			}
 		} else {
-			msg, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			sp := &bot.SendMessageParams{
 				ChatID: chatID,
 				Text:   summary,
-			})
+			}
+			if kb != nil {
+				sp.ReplyMarkup = kb
+			}
+			msg, err := b.SendMessage(ctx, sp)
 			if err != nil {
 				log.Printf("failed to send radar summary: %v", err)
 			} else {
@@ -706,6 +715,7 @@ func (t *Tracker) buildRadarSummary(lines []radarLine, center *Coordinates, radi
 		fmt.Fprintf(&sb, "\n  %.0fм ↕ | %.0fкм/ч | %.1fкм | %s",
 			pos.Altitude, pos.GroundSpeed, dist,
 			l.entry.LastSeen.In(tz).Format("15:04:05"))
+		fmt.Fprintf(&sb, "\n  📍 %.4f, %.4f", pos.Latitude, pos.Longitude)
 
 		// Truncate to fit Telegram message limit.
 		if sb.Len() > 3900 {
@@ -718,4 +728,29 @@ func (t *Tracker) buildRadarSummary(lines []radarLine, center *Coordinates, radi
 		sb.WriteString("\nНет ВС в зоне")
 	}
 	return sb.String()
+}
+
+// radarButtons builds inline keyboard with map links for radar entries.
+func radarButtons(lines []radarLine) *models.InlineKeyboardMarkup {
+	var rows [][]models.InlineKeyboardButton
+	for _, l := range lines {
+		if l.entry.Position == nil {
+			continue
+		}
+		label := l.id
+		if name, ok := aircraftTypes[l.entry.AircraftType]; ok && l.entry.AircraftType > 0 {
+			label += " " + name
+		}
+		url := mapsNavURL(l.entry.Position.Latitude, l.entry.Position.Longitude)
+		rows = append(rows, []models.InlineKeyboardButton{
+			{Text: "🗺 " + label, URL: url},
+		})
+		if len(rows) >= 20 {
+			break
+		}
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
