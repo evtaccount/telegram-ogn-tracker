@@ -212,7 +212,7 @@ func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinat
 	}
 
 	// Stale data warning.
-	if !info.LastUpdate.IsZero() && time.Since(info.LastUpdate) > staleThreshold {
+	if info.Status == StatusFlying && !info.LastUpdate.IsZero() && time.Since(info.LastUpdate) > staleThreshold {
 		mins := int(time.Since(info.LastUpdate).Minutes())
 		text += fmt.Sprintf("\n⚠️ Нет данных %d мин", mins)
 		text += "\n⏱ " + info.LastUpdate.In(t.tz()).Format("15:04:05")
