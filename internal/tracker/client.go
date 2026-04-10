@@ -221,7 +221,7 @@ func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinat
 
 	// Flight data lines.
 	altLine := fmt.Sprintf("\nВысота: %.0fм", pos.Altitude)
-	if pos.ClimbRate != 0 {
+	if info.Status == StatusFlying {
 		altLine += fmt.Sprintf(" (%+.1fм/с)", pos.ClimbRate)
 	}
 	text += altLine
