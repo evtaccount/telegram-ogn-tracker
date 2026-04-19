@@ -1,0 +1,10 @@
+{
+  "cmd/bot/main.go": 1775242647.969556,
+  "internal/tracker/client.go": 1775813106.2178144,
+  "internal/tracker/persist.go": 1775812973.9394743,
+  "internal/tracker/tracker.go": 1775813027.1936896,
+  "internal/tracker/commands.go": 1775813192.5248456,
+  "README.md": 1775241156.8872375,
+  "CLAUDE.md": 1776613362.2964017,
+  "DECISIONS.md": 1775328658.6775138
+}
