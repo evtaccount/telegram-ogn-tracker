@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"sort"
-	"strings"
 	"time"
 
 	"ogn/client"
@@ -19,8 +18,20 @@ const (
 	staleThreshold     = 5 * time.Minute  // beacons older than this get a "stale data" badge
 	updateInterval     = 30 * time.Second // interval for refreshing the summary and live-locations
 	liveLocationPeriod = 86400            // Telegram live-location lifetime in seconds (24h)
-	reconnectDelay     = 5 * time.Second  // delay before reconnecting to the OGN APRS feed
+	reconnectDelay     = 1 * time.Second  // initial delay before retrying after an OGN connection error
+	reconnectMaxDelay  = 60 * time.Second // ceiling for the exponential backoff
 )
+
+// nextReconnectDelay doubles the current backoff, capped at reconnectMaxDelay.
+// Used by runClient and runRadarClient to avoid hammering the OGN APRS server
+// when it is unavailable for an extended period.
+func nextReconnectDelay(d time.Duration) time.Duration {
+	d *= 2
+	if d > reconnectMaxDelay {
+		return reconnectMaxDelay
+	}
+	return d
+}
 
 // runClient connects to the OGN APRS server and processes position messages
 // in an infinite reconnect loop until stopCh is closed.
@@ -29,6 +40,7 @@ const (
 // without racing on this read path.
 func (t *Tracker) runClient(stopCh <-chan struct{}, aprs *client.Client) {
 	log.Println("OGN client started")
+	delay := reconnectDelay
 	for {
 		select {
 		case <-stopCh:
@@ -101,14 +113,16 @@ func (t *Tracker) runClient(stopCh <-chan struct{}, aprs *client.Client) {
 			}
 		}, false)
 		if err != nil {
+			log.Printf("OGN client error (retry in %v): %v", delay, err)
 			select {
 			case <-stopCh:
 				log.Println("OGN client stopped")
 				return
-			default:
-				log.Printf("OGN client error: %v", err)
-				time.Sleep(reconnectDelay)
+			case <-time.After(delay):
 			}
+			delay = nextReconnectDelay(delay)
+		} else {
+			delay = reconnectDelay
 		}
 	}
 }
@@ -229,7 +243,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 				if heading > 0 {
 					editParams.Heading = heading
 				}
-				if _, err := b.EditMessageLiveLocation(ctx, editParams); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+				if _, err := b.EditMessageLiveLocation(ctx, editParams); err != nil && !isMessageNotModified(err) {
 					log.Printf("failed to edit location for %s: %v", id, err)
 				}
 			} else {
@@ -270,7 +284,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			if kb != nil {
 				editParams.ReplyMarkup = kb
 			}
-			if _, err := b.EditMessageText(ctx, editParams); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+			if _, err := b.EditMessageText(ctx, editParams); err != nil && !isMessageNotModified(err) {
 				log.Printf("failed to edit summary: %v", err)
 			}
 		} else {
@@ -302,6 +316,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 // See runClient for why aprs is passed explicitly.
 func (t *Tracker) runRadarClient(stopCh <-chan struct{}, aprs *client.Client) {
 	log.Println("Radar client started")
+	delay := reconnectDelay
 	for {
 		select {
 		case <-stopCh:
@@ -334,14 +349,16 @@ func (t *Tracker) runRadarClient(stopCh <-chan struct{}, aprs *client.Client) {
 			t.mu.Unlock()
 		}, false)
 		if err != nil {
+			log.Printf("Radar client error (retry in %v): %v", delay, err)
 			select {
 			case <-stopCh:
 				log.Println("Radar client stopped")
 				return
-			default:
-				log.Printf("Radar client error: %v", err)
-				time.Sleep(reconnectDelay)
+			case <-time.After(delay):
 			}
+			delay = nextReconnectDelay(delay)
+		} else {
+			delay = reconnectDelay
 		}
 	}
 }
@@ -413,7 +430,7 @@ func (t *Tracker) sendRadarUpdates(stopCh <-chan struct{}) {
 			if kb != nil {
 				ep.ReplyMarkup = kb
 			}
-			if _, err := b.EditMessageText(ctx, ep); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+			if _, err := b.EditMessageText(ctx, ep); err != nil && !isMessageNotModified(err) {
 				log.Printf("failed to edit radar summary: %v", err)
 			}
 		} else {
