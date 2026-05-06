@@ -7,8 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-telegram/bot/models"
 	"ogn/ddb"
+
+	"github.com/go-telegram/bot/models"
 )
 
 // radarLine pairs an OGN id with a snapshot of the latest radar entry.
