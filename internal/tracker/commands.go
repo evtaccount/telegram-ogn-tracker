@@ -26,17 +26,23 @@ func (t *Tracker) isTrusted(userID int64) bool {
 }
 
 // requireGroupChat is a guard that replies with an error if called outside a group.
+// When ALLOWED_CHATS is configured, commands from non-listed groups are dropped
+// silently — we don't want strangers to confirm the bot's presence.
 func (t *Tracker) requireGroupChat(ctx context.Context, b *bot.Bot, m *models.Message) bool {
-	if isGroupChat(m.Chat) {
-		return true
+	if !isGroupChat(m.Chat) {
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   "Эта команда работает только в группе.",
+		}); err != nil {
+			log.Printf("failed to send group-only message: %v", err)
+		}
+		return false
 	}
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: m.Chat.ID,
-		Text:   "Эта команда работает только в группе.",
-	}); err != nil {
-		log.Printf("failed to send group-only message: %v", err)
+	if !t.isAllowedChat(m.Chat.ID) {
+		log.Printf("[acl] dropping command from non-allowed chat %d (user=%d)", m.Chat.ID, m.From.ID)
+		return false
 	}
-	return false
+	return true
 }
 
 // requireSession is a guard that replies with an error if no active session exists.
@@ -77,6 +83,11 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 
 	if isPrivateChat(m.Chat) {
 		t.cmdStartPrivate(ctx, b, m)
+		return
+	}
+
+	if !t.isAllowedChat(m.Chat.ID) {
+		log.Printf("[acl] dropping /start from non-allowed chat %d (user=%d)", m.Chat.ID, m.From.ID)
 		return
 	}
 

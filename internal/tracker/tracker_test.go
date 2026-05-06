@@ -205,3 +205,60 @@ func TestFormatDDBInfo(t *testing.T) {
 		t.Errorf("model only: got %q", got)
 	}
 }
+
+func TestParseAllowedChats(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want map[int64]bool
+	}{
+		{"empty", "", nil},
+		{"whitespace only", "   ", nil},
+		{"single id", "-100123", map[int64]bool{-100123: true}},
+		{"multiple ids", "-100123,456,-789", map[int64]bool{-100123: true, 456: true, -789: true}},
+		{"with spaces", " -100 , 200 ", map[int64]bool{-100: true, 200: true}},
+		{"trailing comma", "100,", map[int64]bool{100: true}},
+		{"all invalid", "abc,xyz", nil},
+		{"mixed valid/invalid", "100,abc,200", map[int64]bool{100: true, 200: true}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := parseAllowedChats(c.in)
+			if len(got) != len(c.want) {
+				t.Fatalf("len(got)=%d len(want)=%d, got=%v want=%v", len(got), len(c.want), got, c.want)
+			}
+			for k, v := range c.want {
+				if got[k] != v {
+					t.Errorf("got[%d]=%v want %v", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestIsAllowedChat(t *testing.T) {
+	t.Run("nil allow-list permits all", func(t *testing.T) {
+		tr := &Tracker{}
+		if !tr.isAllowedChat(123) {
+			t.Error("nil allow-list should permit any chat")
+		}
+		if !tr.isAllowedChat(-100456) {
+			t.Error("nil allow-list should permit negative chat IDs too")
+		}
+	})
+	t.Run("set allow-list restricts", func(t *testing.T) {
+		tr := &Tracker{allowedChats: map[int64]bool{-100123: true, 456: true}}
+		if !tr.isAllowedChat(-100123) {
+			t.Error("listed chat should be allowed")
+		}
+		if !tr.isAllowedChat(456) {
+			t.Error("listed chat should be allowed")
+		}
+		if tr.isAllowedChat(789) {
+			t.Error("non-listed chat should be denied")
+		}
+		if tr.isAllowedChat(0) {
+			t.Error("zero should be denied when allow-list is set")
+		}
+	})
+}
