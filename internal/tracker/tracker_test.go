@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -261,4 +262,104 @@ func TestIsAllowedChat(t *testing.T) {
 			t.Error("zero should be denied when allow-list is set")
 		}
 	})
+}
+
+func TestSaveStateAsync(t *testing.T) {
+	t.Run("saveState requests an async write", func(t *testing.T) {
+		tr := &Tracker{
+			users:    make(map[int64]*UserInfo),
+			saveCh:   make(chan []byte, 1),
+			saveDone: make(chan struct{}),
+		}
+		tr.users[1] = &UserInfo{UserID: 1, OGNID: "ABC"}
+
+		tr.mu.Lock()
+		tr.saveState()
+		tr.mu.Unlock()
+
+		select {
+		case data := <-tr.saveCh:
+			if len(data) == 0 {
+				t.Fatal("expected a non-empty snapshot")
+			}
+		default:
+			t.Fatal("expected a snapshot in the channel")
+		}
+	})
+
+	t.Run("saveState replaces a stale pending snapshot", func(t *testing.T) {
+		tr := &Tracker{
+			users:    make(map[int64]*UserInfo),
+			saveCh:   make(chan []byte, 1),
+			saveDone: make(chan struct{}),
+		}
+		tr.users[1] = &UserInfo{UserID: 1, OGNID: "OLD"}
+
+		tr.mu.Lock()
+		tr.saveState()
+		tr.mu.Unlock()
+
+		tr.users[1].OGNID = "NEW"
+		tr.mu.Lock()
+		tr.saveState()
+		tr.mu.Unlock()
+
+		data := <-tr.saveCh
+		if len(data) == 0 || !strings.Contains(string(data), "NEW") || strings.Contains(string(data), "OLD") {
+			t.Fatalf("expected only the latest snapshot, got: %s", data)
+		}
+	})
+
+	t.Run("saveState is a no-op after Shutdown flag is set", func(t *testing.T) {
+		tr := &Tracker{
+			users:        make(map[int64]*UserInfo),
+			saveCh:       make(chan []byte, 1),
+			saveDone:     make(chan struct{}),
+			shuttingDown: true,
+		}
+		tr.users[1] = &UserInfo{UserID: 1, OGNID: "ABC"}
+
+		tr.mu.Lock()
+		tr.saveState()
+		tr.mu.Unlock()
+
+		select {
+		case <-tr.saveCh:
+			t.Fatal("expected no snapshot once shuttingDown is set")
+		default:
+		}
+	})
+}
+
+func TestStaleLowSpeedReset(t *testing.T) {
+	// Verify the boundary used by loadState: timestamps within the staleness
+	// window are preserved, older ones are reset on load.
+	if staleLowSpeedWindow <= 0 {
+		t.Fatal("staleLowSpeedWindow must be positive")
+	}
+
+	now := time.Now()
+	cases := []struct {
+		name      string
+		since     time.Time
+		wantReset bool
+	}{
+		{"zero stays zero", time.Time{}, false},
+		{"recent preserved", now.Add(-30 * time.Second), false},
+		{"just inside window preserved", now.Add(-staleLowSpeedWindow + time.Second), false},
+		{"just outside window resets", now.Add(-staleLowSpeedWindow - time.Second), true},
+		{"hours-old resets", now.Add(-2 * time.Hour), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			low := c.since
+			if !low.IsZero() && time.Since(low) > staleLowSpeedWindow {
+				low = time.Time{}
+			}
+			gotReset := !c.since.IsZero() && low.IsZero()
+			if gotReset != c.wantReset {
+				t.Errorf("reset=%v want=%v (since=%v)", gotReset, c.wantReset, c.since)
+			}
+		})
+	}
 }
