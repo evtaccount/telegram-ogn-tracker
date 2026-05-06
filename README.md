@@ -1,65 +1,75 @@
 # Telegram OGN Tracker
-This repository contains a Go implementation (`cmd/bot/main.go`) of a Telegram bot that tracks glider positions from the [Open Glider Network](https://www.glidernet.org/). It uses the [go-ogn-client](https://github.com/evtaccount/ogn-client) library for receiving beacons.
 
-## Usage
+Telegram бот для отслеживания парапланов и планеров в реальном времени через [Open Glider Network](https://www.glidernet.org/) (APRS feed). Использует библиотеку [ogn-client](https://github.com/evtaccount/ogn-client) для приёма биконов.
 
-1. Create a `.env` file in this directory with your bot token:
-   ```
-   TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_TOKEN
-   ```
-2. Run the bot:
-   ```sh
-   make run
-   ```
-   This starts `go run ./cmd/bot`.
-3. To build a standalone binary:
-    ```sh
-    make build-go
-    ```
+Бот предназначен для работы в группе пилотов: показывает живые локации, детектит посадки, помогает ретриверу выехать к севшему пилоту, а через DM — позволяет пилоту самостоятельно подтвердить посадку.
 
-Alternatively you can run the bot with Docker:
+## Запуск
+
+### Локально
 
 ```sh
-docker-compose up -d
+TELEGRAM_BOT_TOKEN=xxx go run ./cmd/bot
 ```
 
-The container reads the token from the `.env` file.
+### Docker
 
-The set of available commands depends on the current session state:
+```sh
+cp .env.example .env   # вписать TELEGRAM_BOT_TOKEN
+docker compose up --build -d
+```
 
-1. Before you run `/start` only `/start` and `/help` are available.
-2. After `/start` you can also use `/start_session` and `/status`.
-3. Running `/start_session` unlocks the full command set: `/add`, `/remove`, `/track_on`, `/list`, `/status`, and `/session_reset`. When tracking is active, `/track_on` is replaced by `/track_off`.
-4. Calling `/start_session` again clears all added addresses and restarts the session.
+Состояние сессии сохраняется в `data/session.json` (volume); бот переживает рестарты с сохранением списка пилотов и таймзоны.
 
-Commands inside Telegram:
- - `/start` – display a welcome message and show how to enable commands.
- - `/start_session` – start or reset the session and unlock commands.
-- `/add <id> [name]` – start tracking the given OGN id. The optional name may contain spaces and will appear before your username in location messages.
-- `/remove <id>` – stop tracking the id.
-- `/landing` – set the default landing location. After sending the command, send a Telegram location within two minutes.
-- `/track_on` – enable tracking (replaced by `/track_off` once active).
-- `/track_off` – disable tracking and keep addresses.
-- `/session_reset` – stop tracking and clear all addresses.
-- `/list` – show current tracked ids and state (with the Telegram name of the user who added each).
-- `/status` – show current state.
-- `/help` – show the list of available commands.
+## Переменные окружения
 
-Tracking compares only the last six characters of each callsign. This means you
-can add IDs in their short form (e.g. `FE0E4A`) and they will match beacons with
-longer prefixes like `ICA3FE0E4A`.
-When any ID is added in this short form, APRS server filtering is disabled so
-that beacons with longer prefixes still reach the bot.
+| Переменная | Назначение |
+|------------|-----------|
+| `TELEGRAM_BOT_TOKEN` | токен бота от BotFather (обязательно) |
+| `ALLOWED_CHATS` | белый список chat ID групп через запятую. Незаданный — разрешены все чаты. |
+| `DEBUG` | при `1` регистрирует команду `/debug_wipe` (стирает всё состояние) |
 
-When tracking IDs, the bot sends a separate live location message for every
-address. By default the message shows your Telegram username. If you provide a
-name with `/add`, that name (even with spaces) is shown before your username in
-parentheses.
-The text message below each location also shows when that glider was last seen
-on the network. Each message is updated independently when a new beacon is
-received for that address.
+## Команды в группе
 
-The bot prints debug logs for every received OGN line and any parse errors to help diagnose missing data.
+| Команда | Что делает |
+|---------|-----------|
+| `/start` | создаёт сессию или предлагает «продолжить / сбросить», если пилоты уже есть |
+| `/start_session` | принудительно пересоздаёт сессию, удаляя всех пилотов |
+| `/session_reset` | останавливает трекинг и предлагает варианты сброса |
+| `/add <id> [name]` | добавить пилота по 6-символьному OGN ID. Без аргументов — отправляет ссылку на DM, чтобы пилот сам прислал свой ID не светя его в группе |
+| `/remove <id>` | убрать пилота |
+| `/track_on` / `/track_off` | старт/стоп трекинга |
+| `/list` | список текущих пилотов и их состояний |
+| `/status` | трекинг on/off + количество пилотов |
+| `/landing` | задать координаты места посадки (после команды отправь геолокацию в течение 2 минут) |
+| `/area [km]` / `/area_off` | задать/снять зону отслеживания радиусом `km` (по умолчанию 100). В зоне бот auto-discovery подбирает любые OGN-биконы |
+| `/radar [km]` | показать всё, что летает в зоне; клавиатура переключается в «радар» |
+| `/driver` / `/driver_off` | зарегистрировать ретривера (нужно прислать живую локацию) или отменить |
+| `/tz <Europe/Kyiv>` | установить таймзону сессии (IANA) |
+| `/help` | список команд |
 
-Positions are requested from `https://api.glidernet.org/tracker/<id>`; you may
-need to adjust this endpoint if the API changes.
+Reply-клавиатура показывает контекстно-зависимые кнопки (`Старт`, `Стоп`, `Список`, `Зона`, `Водитель`, `Радар`).
+
+## Команды в DM
+
+| Команда | Что делает |
+|---------|-----------|
+| `/start [add_<chatID>]` | регистрирует пользователя; с deep-link payload — обрабатывает invite от `/add` |
+| `/myid` | показать свои Telegram и OGN ID |
+| `/confirm` | подтвердить пендинг-операцию (например, использовать ранее сохранённый OGN ID) |
+
+В DM также появляются кнопки `🪂 Сел` (подтвердить автодетект посадки) и `📍 Посадка` (отправить координаты места посадки), если пилот сейчас отслеживается и летит.
+
+## OGN ID
+
+Бот хранит «короткую» 6-символьную форму ID (последние 6 символов адреса трекера, например `FE0E4A`). Для APRS-фильтра короткий ID разворачивается во все стандартные OGN-префиксы (`FLR`, `OGN`, `ICA`, `NAV`, `FNT`), так что бикон с любым префиксом дойдёт.
+
+## Детектор посадки
+
+Считается посаженным, если в течение 90 секунд подряд `GroundSpeed < 5 km/h` и `|ClimbRate| < 0.3 m/s`. Бот предлагает пилоту в DM подтвердить посадку кнопкой `🪂 Сел`. Ретривер видит inline-кнопку «Пикап» — фиксирует, что пилота забрали.
+
+## Дополнительно
+
+- Live-локация в Telegram живёт 24 часа, далее точка не обновляется (известное ограничение).
+- Состояние записывается атомарно (через `tmp + rename`) в `data/session.json` с правами `0600`.
+- CI: GitHub Actions на тэги `v*` собирает мульти-платформенный бинарь и публикует Docker-образ в GHCR.
