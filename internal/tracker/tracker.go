@@ -491,10 +491,22 @@ func (t *Tracker) updateFilter() {
 		filter = client.CombineFilters(filters...)
 	}
 
+	// Collect tracked IDs (excluding auto-discovered) for diagnostic logs.
+	trackedIDs := make([]string, 0, len(s.Tracking))
+	for id, info := range s.Tracking {
+		if !info.AutoDiscovered {
+			trackedIDs = append(trackedIDs, id)
+		}
+	}
+
 	if !s.TrackingOn {
 		// No goroutines using the client — just patch the filter for next start.
 		t.aprs.Filter = filter
-		slog.Info("aprs filter updated (idle)", "filter", filter, "ids", len(callsigns), "area", s.TrackArea != nil)
+		slog.Info("aprs filter updated (idle)",
+			"filter", filter,
+			"tracked_ids", trackedIDs,
+			"callsigns", callsigns,
+			"area", s.TrackArea != nil)
 		return
 	}
 
@@ -510,7 +522,11 @@ func (t *Tracker) updateFilter() {
 	newStopCh := make(chan struct{})
 	s.StopCh = newStopCh
 
-	slog.Info("aprs filter restarting", "filter", filter, "ids", len(callsigns), "area", s.TrackArea != nil)
+	slog.Info("aprs filter restarting",
+		"filter", filter,
+		"tracked_ids", trackedIDs,
+		"callsigns", callsigns,
+		"area", s.TrackArea != nil)
 
 	go func() {
 		if oldStopCh != nil {
