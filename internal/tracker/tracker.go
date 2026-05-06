@@ -11,31 +11,32 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-telegram/bot"
-	"github.com/go-telegram/bot/models"
 	"ogn/client"
 	"ogn/ddb"
 	"ogn/parser"
+
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 )
 
 // PilotStatus represents the current state of a tracked pilot.
 type PilotStatus int
 
 const (
-	StatusFlying   PilotStatus = iota
+	StatusFlying PilotStatus = iota
 	StatusLanded
 	StatusPickedUp
 )
 
 // TrackInfo holds tracking state for a single pilot/aircraft.
 type TrackInfo struct {
-	MessageID      int                     // Telegram message ID for the live-location pin
-	Position       *parser.PositionMessage // last position received from OGN
-	Name           string
-	Username       string
-	LastUpdate     time.Time
-	Status         PilotStatus
-	LandingTime    time.Time
+	MessageID        int                     // Telegram message ID for the live-location pin
+	Position         *parser.PositionMessage // last position received from OGN
+	Name             string
+	Username         string
+	LastUpdate       time.Time
+	Status           PilotStatus
+	LandingTime      time.Time
 	LandingConfirmed bool      // true if pilot confirmed landing via DM button
 	LowSpeedSince    time.Time // start of the low-speed window used for landing detection
 	AutoDiscovered   bool      // discovered automatically via the area-tracking zone
@@ -233,7 +234,7 @@ func (t *Tracker) stopTrackingAsync() {
 		if stopCh != nil {
 			close(stopCh)
 		}
-		aprs.Disconnect()
+		_ = aprs.Disconnect()
 	}()
 }
 
@@ -255,7 +256,7 @@ func (t *Tracker) stopRadarAsync() {
 		if stopCh != nil {
 			close(stopCh)
 		}
-		aprs.Disconnect()
+		_ = aprs.Disconnect()
 	}()
 }
 
@@ -475,7 +476,7 @@ func (t *Tracker) updateFilter() {
 		if oldStopCh != nil {
 			close(oldStopCh)
 		}
-		oldAprs.Disconnect()
+		_ = oldAprs.Disconnect()
 	}()
 	go t.runClient(newStopCh, newAprs)
 	go t.sendUpdates(newStopCh)

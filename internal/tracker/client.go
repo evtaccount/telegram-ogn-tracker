@@ -8,10 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-telegram/bot"
-	"github.com/go-telegram/bot/models"
 	"ogn/client"
 	"ogn/parser"
+
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 )
 
 const (
@@ -425,4 +426,3 @@ func (t *Tracker) sendRadarUpdates(stopCh <-chan struct{}) {
 		}
 	}
 }
-

@@ -29,7 +29,7 @@ func (t *Tracker) sessionChatID() int64 {
 // deleteCallbackMessage removes the inline-button message that triggered the callback.
 func deleteCallbackMessage(ctx context.Context, b *bot.Bot, cq *models.CallbackQuery) {
 	if cq.Message.Message != nil {
-		b.DeleteMessage(ctx, &bot.DeleteMessageParams{
+		_, _ = b.DeleteMessage(ctx, &bot.DeleteMessageParams{
 			ChatID:    cq.Message.Message.Chat.ID,
 			MessageID: cq.Message.Message.ID,
 		})

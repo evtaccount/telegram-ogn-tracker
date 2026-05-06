@@ -12,8 +12,8 @@ const sessionFile = "data/session.json"
 
 // appState is the new top-level JSON-serialisable format.
 type appState struct {
-	Session *sessionState            `json:"session,omitempty"`
-	Users   map[int64]*userState     `json:"users,omitempty"`
+	Session *sessionState        `json:"session,omitempty"`
+	Users   map[int64]*userState `json:"users,omitempty"`
 }
 
 // userState is the JSON-serialisable snapshot of a user's profile.
@@ -37,13 +37,13 @@ type sessionState struct {
 
 // pilotState is the JSON-serialisable snapshot of a tracked pilot.
 type pilotState struct {
-	Name           string      `json:"name,omitempty"`
-	Username       string      `json:"username,omitempty"`
-	Status         PilotStatus `json:"status"`
-	LandingTime    time.Time   `json:"landing_time,omitempty"`
-	LandingConfirmed bool      `json:"landing_confirmed,omitempty"`
-	AutoDiscovered   bool      `json:"auto_discovered,omitempty"`
-	OwnerUserID      int64     `json:"owner_user_id,omitempty"`
+	Name             string      `json:"name,omitempty"`
+	Username         string      `json:"username,omitempty"`
+	Status           PilotStatus `json:"status"`
+	LandingTime      time.Time   `json:"landing_time,omitempty"`
+	LandingConfirmed bool        `json:"landing_confirmed,omitempty"`
+	AutoDiscovered   bool        `json:"auto_discovered,omitempty"`
+	OwnerUserID      int64       `json:"owner_user_id,omitempty"`
 }
 
 // legacySessionState represents the old format (pre-Phase 1) for migration.
@@ -234,4 +234,3 @@ func (t *Tracker) loadState() bool {
 		len(session.Tracking), ss.ChatID, ss.TrackingOn)
 	return ss.TrackingOn
 }
-

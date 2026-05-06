@@ -7,9 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"ogn/client"
+
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
-	"ogn/client"
 )
 
 // execAddDirect adds a pilot by OGN ID directly from /add <id> [name] [@username] in a group.
