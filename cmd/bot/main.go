@@ -40,4 +40,5 @@ func main() {
 	t = tracker.NewTracker(b)
 	t.RegisterHandlers(b)
 	b.Start(ctx)
+	t.Shutdown()
 }

@@ -74,6 +74,9 @@ func (t *Tracker) runClient(stopCh <-chan struct{}, aprs *client.Client) {
 			if ok && info.Status != StatusPickedUp && !(info.Status == StatusLanded && info.LandingConfirmed) {
 				info.Position = msg
 				info.LastUpdate = time.Now()
+				if msg.Course > 0 {
+					info.LastHeading = msg.Course
+				}
 				if updateLandingState(info, msg, time.Now()) {
 					alert = &landingEvent{
 						id:   id,
@@ -205,7 +208,15 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 
 			heading := info.Position.Course
 			if heading == 0 && info.Position.GroundSpeed > 0 {
-				heading = 360
+				// OGN often reports Course=0 for moving aircraft; reuse the
+				// previously seen heading so the live-location arrow doesn't
+				// flip back to north. Fall back to 360 only when we have
+				// never observed a real heading for this pilot.
+				if info.LastHeading > 0 {
+					heading = info.LastHeading
+				} else {
+					heading = 360
+				}
 			}
 
 			if info.MessageID != 0 {

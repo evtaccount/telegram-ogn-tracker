@@ -44,6 +44,12 @@ type pilotState struct {
 	LandingConfirmed bool        `json:"landing_confirmed,omitempty"`
 	AutoDiscovered   bool        `json:"auto_discovered,omitempty"`
 	OwnerUserID      int64       `json:"owner_user_id,omitempty"`
+	// MessageID lets us continue editing the existing live-location message
+	// after a restart instead of orphaning it. Telegram messages live for 24h.
+	MessageID int `json:"message_id,omitempty"`
+	// LowSpeedSince preserves landing-detector progress across restarts. On
+	// load, values older than the staleness window are reset (see loadState).
+	LowSpeedSince time.Time `json:"low_speed_since,omitempty"`
 }
 
 // legacySessionState represents the old format (pre-Phase 1) for migration.
@@ -58,8 +64,14 @@ type legacySessionState struct {
 	Timezone        string                 `json:"timezone,omitempty"`
 }
 
-// saveState writes the current session to disk. Must be called with t.mu held.
-func (t *Tracker) saveState() {
+// staleLowSpeedWindow caps how old a persisted LowSpeedSince timestamp can be
+// before we treat it as obsolete. Detector progress is preserved across short
+// restarts but reset after long downtime to avoid false-positive landings.
+const staleLowSpeedWindow = 5 * time.Minute
+
+// marshalStateLocked builds a JSON snapshot of the in-memory state.
+// Must be called with t.mu held. Returns nil on marshalling failure.
+func (t *Tracker) marshalStateLocked() []byte {
 	state := appState{}
 
 	if t.session != nil {
@@ -85,6 +97,8 @@ func (t *Tracker) saveState() {
 					LandingConfirmed: info.LandingConfirmed,
 					AutoDiscovered:   info.AutoDiscovered,
 					OwnerUserID:      info.OwnerUserID,
+					MessageID:        info.MessageID,
+					LowSpeedSince:    info.LowSpeedSince,
 				}
 			}
 		}
@@ -106,15 +120,19 @@ func (t *Tracker) saveState() {
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		log.Printf("failed to marshal session state: %v", err)
-		return
+		return nil
 	}
+	return data
+}
 
+// writeStateBytes atomically persists the given snapshot. Safe to call without
+// holding t.mu — performs no Tracker access.
+func writeStateBytes(data []byte) {
 	dir := filepath.Dir(sessionFile)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		log.Printf("failed to create data dir: %v", err)
 		return
 	}
-
 	// Atomic write: stage to a temp file then rename, so a crash mid-write
 	// does not corrupt the canonical state file.
 	tmp := sessionFile + ".tmp"
@@ -124,6 +142,38 @@ func (t *Tracker) saveState() {
 	}
 	if err := os.Rename(tmp, sessionFile); err != nil {
 		log.Printf("failed to rename session file: %v", err)
+	}
+}
+
+// saveState requests asynchronous persistence. Must be called with t.mu held.
+// Snapshots the state under the lock and hands it off to the save worker;
+// pending older snapshots are dropped in favour of the newest one. After
+// Shutdown the call becomes a no-op.
+func (t *Tracker) saveState() {
+	if t.shuttingDown {
+		return
+	}
+	data := t.marshalStateLocked()
+	if data == nil {
+		return
+	}
+	// Replace any stale pending snapshot with the fresh one.
+	select {
+	case <-t.saveCh:
+	default:
+	}
+	select {
+	case t.saveCh <- data:
+	default:
+	}
+}
+
+// saveWorker drains queued snapshots and writes them to disk. Exits when
+// saveCh is closed (during Shutdown).
+func (t *Tracker) saveWorker() {
+	defer close(t.saveDone)
+	for data := range t.saveCh {
+		writeStateBytes(data)
 	}
 }
 
@@ -216,6 +266,13 @@ func (t *Tracker) loadState() bool {
 	}
 	if len(ss.Tracking) > 0 {
 		for id, ps := range ss.Tracking {
+			low := ps.LowSpeedSince
+			// Drop detector progress if the persisted window is older than the
+			// staleness threshold — long downtime would otherwise produce a
+			// spurious "landed" verdict on the next beacon.
+			if !low.IsZero() && time.Since(low) > staleLowSpeedWindow {
+				low = time.Time{}
+			}
 			session.Tracking[id] = &TrackInfo{
 				Name:             ps.Name,
 				Username:         ps.Username,
@@ -224,6 +281,8 @@ func (t *Tracker) loadState() bool {
 				LandingConfirmed: ps.LandingConfirmed,
 				AutoDiscovered:   ps.AutoDiscovered,
 				OwnerUserID:      ps.OwnerUserID,
+				MessageID:        ps.MessageID,
+				LowSpeedSince:    low,
 			}
 		}
 	}

@@ -41,6 +41,11 @@ type TrackInfo struct {
 	LowSpeedSince    time.Time // start of the low-speed window used for landing detection
 	AutoDiscovered   bool      // discovered automatically via the area-tracking zone
 	OwnerUserID      int64     // Telegram user ID of the tracker's owner
+	// LastHeading caches the most recent non-zero course in degrees so the
+	// live-location arrow does not jump back to north when OGN reports
+	// Course=0 with non-zero speed (a known limitation of the data feed).
+	// Runtime-only; not persisted.
+	LastHeading int
 }
 
 // StatusEmoji returns an emoji reflecting the pilot's current state.
@@ -277,7 +282,7 @@ type Tracker struct {
 	botUsername   string
 	aprs          *client.Client
 	devices       map[string]ddb.Device // OGN Device Database cache for model/registration display
-	mu            sync.Mutex            // guards session, users, devices
+	mu            sync.Mutex            // guards session, users, devices, shuttingDown
 	session       *GroupSession
 	users         map[int64]*UserInfo
 	resumeOnStart bool // whether to auto-resume tracking on the next restart
@@ -285,6 +290,12 @@ type Tracker struct {
 	// Nil means "allow all" — preserves behaviour when ALLOWED_CHATS is unset.
 	// Populated once in NewTracker and never mutated thereafter.
 	allowedChats map[int64]bool
+	// Asynchronous persistence: saveCh delivers marshalled snapshots to a
+	// background worker so callers do not block on disk I/O. After Shutdown
+	// flips shuttingDown=true the channel is closed and saveDone signals exit.
+	saveCh       chan []byte
+	saveDone     chan struct{}
+	shuttingDown bool // guarded by mu
 }
 
 // parseAllowedChats parses a comma-separated list of chat IDs from env.
@@ -507,8 +518,11 @@ func NewTracker(b *bot.Bot) *Tracker {
 		aprs:         client.New("N0CALL", ""),
 		users:        make(map[int64]*UserInfo),
 		allowedChats: parseAllowedChats(os.Getenv("ALLOWED_CHATS")),
+		saveCh:       make(chan []byte, 1),
+		saveDone:     make(chan struct{}),
 	}
 	t.aprs.Logger = log.Default()
+	go t.saveWorker()
 	if t.allowedChats != nil {
 		ids := make([]string, 0, len(t.allowedChats))
 		for id := range t.allowedChats {
@@ -537,6 +551,56 @@ func NewTracker(b *bot.Bot) *Tracker {
 
 	go t.loadDevices()
 	return t
+}
+
+// Shutdown stops background goroutines, persists final state synchronously,
+// and disconnects the APRS client. Idempotent — extra calls return immediately.
+// Designed to be invoked from main() after the bot's update loop exits.
+func (t *Tracker) Shutdown() {
+	t.mu.Lock()
+	if t.shuttingDown {
+		t.mu.Unlock()
+		return
+	}
+	t.shuttingDown = true
+	final := t.marshalStateLocked()
+
+	var stopCh, radarStopCh chan struct{}
+	if t.session != nil {
+		if t.session.TrackingOn {
+			stopCh = t.session.StopCh
+			t.session.StopCh = nil
+			t.session.TrackingOn = false
+		}
+		if t.session.RadarOn {
+			radarStopCh = t.session.RadarStopCh
+			t.session.RadarStopCh = nil
+			t.session.RadarOn = false
+		}
+	}
+	aprs := t.aprs
+	t.mu.Unlock()
+
+	if stopCh != nil {
+		close(stopCh)
+	}
+	if radarStopCh != nil {
+		close(radarStopCh)
+	}
+
+	// Drain the async writer and force a final synchronous write so the very
+	// last in-memory edits reach disk before the process exits.
+	close(t.saveCh)
+	<-t.saveDone
+	if final != nil {
+		writeStateBytes(final)
+	}
+
+	if aprs != nil {
+		_ = aprs.Disconnect()
+	}
+
+	log.Println("[shutdown] state saved, goroutines stopped")
 }
 
 // ensureUser returns or creates a UserInfo for the given Telegram user.
