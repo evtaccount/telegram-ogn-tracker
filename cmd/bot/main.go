@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,9 +18,22 @@ import (
 )
 
 func main() {
+	// Structured logger: text handler for human-readable output in `docker logs`,
+	// with timestamps and levels. Pipe stdlib log through slog so any third-party
+	// code that uses log.Printf still goes through the same handler.
+	level := slog.LevelInfo
+	if os.Getenv("DEBUG") == "1" {
+		level = slog.LevelDebug
+	}
+	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})
+	slog.SetDefault(slog.New(handler))
+	log.SetFlags(0)
+	log.SetOutput(slog.NewLogLogger(handler, slog.LevelInfo).Writer())
+
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
 	if token == "" {
-		log.Fatal("TELEGRAM_BOT_TOKEN must be set")
+		slog.Error("TELEGRAM_BOT_TOKEN must be set")
+		os.Exit(1)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -34,7 +48,8 @@ func main() {
 		t.DefaultHandler(ctx, b, u)
 	}))
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("failed to construct bot", "err", err)
+		os.Exit(1)
 	}
 
 	t = tracker.NewTracker(b)

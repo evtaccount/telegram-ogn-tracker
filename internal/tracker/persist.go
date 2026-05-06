@@ -2,7 +2,7 @@ package tracker
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -119,7 +119,7 @@ func (t *Tracker) marshalStateLocked() []byte {
 
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
-		log.Printf("failed to marshal session state: %v", err)
+		slog.Error("failed to marshal session state", "err", err)
 		return nil
 	}
 	return data
@@ -130,18 +130,18 @@ func (t *Tracker) marshalStateLocked() []byte {
 func writeStateBytes(data []byte) {
 	dir := filepath.Dir(sessionFile)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		log.Printf("failed to create data dir: %v", err)
+		slog.Error("failed to create data dir", "err", err)
 		return
 	}
 	// Atomic write: stage to a temp file then rename, so a crash mid-write
 	// does not corrupt the canonical state file.
 	tmp := sessionFile + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		log.Printf("failed to write session file: %v", err)
+		slog.Error("failed to write session file", "err", err)
 		return
 	}
 	if err := os.Rename(tmp, sessionFile); err != nil {
-		log.Printf("failed to rename session file: %v", err)
+		slog.Error("failed to rename session file", "err", err)
 	}
 }
 
@@ -183,7 +183,7 @@ func (t *Tracker) loadState() bool {
 	data, err := os.ReadFile(sessionFile)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.Printf("failed to read session file: %v", err)
+			slog.Error("failed to read session file", "err", err)
 		}
 		return false
 	}
@@ -191,7 +191,7 @@ func (t *Tracker) loadState() bool {
 	// Try new format first.
 	var state appState
 	if err := json.Unmarshal(data, &state); err != nil {
-		log.Printf("failed to unmarshal session state: %v", err)
+		slog.Error("failed to unmarshal session state", "err", err)
 		return false
 	}
 
@@ -200,7 +200,7 @@ func (t *Tracker) loadState() bool {
 	if state.Session == nil {
 		var legacy legacySessionState
 		if err := json.Unmarshal(data, &legacy); err != nil {
-			log.Printf("failed to unmarshal legacy session state: %v", err)
+			slog.Error("failed to unmarshal legacy session state", "err", err)
 			return false
 		}
 		// Only migrate if the old format had an active session.
@@ -214,7 +214,7 @@ func (t *Tracker) loadState() bool {
 				TrackAreaRadius: legacy.TrackAreaRadius,
 				Timezone:        legacy.Timezone,
 			}
-			log.Printf("migrated legacy session format to new format")
+			slog.Info("migrated legacy session format to new format")
 		} else if legacy.ChatID != 0 {
 			// Old format existed but session was not active — still restore.
 			state.Session = &sessionState{
@@ -226,7 +226,7 @@ func (t *Tracker) loadState() bool {
 				TrackAreaRadius: legacy.TrackAreaRadius,
 				Timezone:        legacy.Timezone,
 			}
-			log.Printf("migrated legacy session format (inactive) to new format")
+			slog.Info("migrated legacy session format (inactive) to new format")
 		}
 	}
 
@@ -245,7 +245,7 @@ func (t *Tracker) loadState() bool {
 
 	// Restore session.
 	if state.Session == nil {
-		log.Printf("no session to restore")
+		slog.Info("no session to restore")
 		return false
 	}
 
@@ -289,7 +289,9 @@ func (t *Tracker) loadState() bool {
 
 	t.session = session
 
-	log.Printf("restored session: %d tracked, chatID=%d, tracking=%v",
-		len(session.Tracking), ss.ChatID, ss.TrackingOn)
+	slog.Info("restored session",
+		"tracked", len(session.Tracking),
+		"chat_id", ss.ChatID,
+		"tracking", ss.TrackingOn)
 	return ss.TrackingOn
 }

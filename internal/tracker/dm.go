@@ -3,7 +3,7 @@ package tracker
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -31,7 +31,7 @@ func (t *Tracker) cmdStartPrivate(ctx context.Context, b *bot.Bot, m *models.Mes
 				ChatID: m.Chat.ID,
 				Text:   "Неверная ссылка.",
 			}); err != nil {
-				log.Printf("failed to send invalid deep link: %v", err)
+				slog.Error("failed to send invalid deep link", "err", err)
 			}
 			return
 		}
@@ -48,14 +48,14 @@ func (t *Tracker) cmdStartPrivate(ctx context.Context, b *bot.Bot, m *models.Mes
 				ChatID: m.Chat.ID,
 				Text:   text,
 			}); err != nil {
-				log.Printf("failed to send DM with existing ID: %v", err)
+				slog.Error("failed to send DM with existing ID", "err", err)
 			}
 		} else {
 			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 				ChatID: m.Chat.ID,
 				Text:   "Отправьте ваш OGN ID (6-значный адрес трекера):",
 			}); err != nil {
-				log.Printf("failed to send DM ask for OGN ID: %v", err)
+				slog.Error("failed to send DM ask for OGN ID", "err", err)
 			}
 		}
 		return
@@ -69,7 +69,7 @@ func (t *Tracker) cmdStartPrivate(ctx context.Context, b *bot.Bot, m *models.Mes
 		ChatID: m.Chat.ID,
 		Text:   "Бот готов. Используйте /myid чтобы задать свой OGN ID.",
 	}); err != nil {
-		log.Printf("failed to send private start message: %v", err)
+		slog.Error("failed to send private start message", "err", err)
 	}
 }
 
@@ -86,7 +86,7 @@ func (t *Tracker) cmdMyID(ctx context.Context, b *bot.Bot, update *models.Update
 			ChatID: m.Chat.ID,
 			Text:   "Эта команда работает только в личке.",
 		}); err != nil {
-			log.Printf("failed to send private-only message: %v", err)
+			slog.Error("failed to send private-only message", "err", err)
 		}
 		return
 	}
@@ -106,14 +106,14 @@ func (t *Tracker) cmdMyID(ctx context.Context, b *bot.Bot, update *models.Update
 				ChatID: m.Chat.ID,
 				Text:   "OGN ID не задан. Используйте /myid <id>",
 			}); err != nil {
-				log.Printf("failed to send myid empty: %v", err)
+				slog.Error("failed to send myid empty", "err", err)
 			}
 		} else {
 			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 				ChatID: m.Chat.ID,
 				Text:   fmt.Sprintf("Ваш OGN ID: %s", ognID),
 			}); err != nil {
-				log.Printf("failed to send myid value: %v", err)
+				slog.Error("failed to send myid value", "err", err)
 			}
 		}
 		return
@@ -127,7 +127,7 @@ func (t *Tracker) cmdMyID(ctx context.Context, b *bot.Bot, update *models.Update
 			ChatID: m.Chat.ID,
 			Text:   fmt.Sprintf("OGN ID %q некорректен. Нужно 6 hex-символов (0-9, A-F).", arg),
 		}); err != nil {
-			log.Printf("failed to send invalid ognid message: %v", err)
+			slog.Error("failed to send invalid ognid message", "err", err)
 		}
 		return
 	}
@@ -152,7 +152,7 @@ func (t *Tracker) cmdMyID(ctx context.Context, b *bot.Bot, update *models.Update
 		ChatID: m.Chat.ID,
 		Text:   fmt.Sprintf("OGN ID обновлён: %s", newID),
 	}); err != nil {
-		log.Printf("failed to confirm myid update: %v", err)
+		slog.Error("failed to confirm myid update", "err", err)
 	}
 }
 
@@ -168,7 +168,7 @@ func (t *Tracker) cmdConfirm(ctx context.Context, b *bot.Bot, update *models.Upd
 			ChatID: m.Chat.ID,
 			Text:   "Эта команда работает только в личке.",
 		}); err != nil {
-			log.Printf("failed to send private-only message: %v", err)
+			slog.Error("failed to send private-only message", "err", err)
 		}
 		return
 	}
@@ -183,7 +183,7 @@ func (t *Tracker) cmdConfirm(ctx context.Context, b *bot.Bot, update *models.Upd
 			ChatID: m.Chat.ID,
 			Text:   "Нет ожидающей группы. Используйте /add в группе.",
 		}); err != nil {
-			log.Printf("failed to send no pending group: %v", err)
+			slog.Error("failed to send no pending group", "err", err)
 		}
 		return
 	}
@@ -193,7 +193,7 @@ func (t *Tracker) cmdConfirm(ctx context.Context, b *bot.Bot, update *models.Upd
 			ChatID: m.Chat.ID,
 			Text:   "OGN ID не задан. Отправьте ID сообщением или используйте /myid <id>.",
 		}); err != nil {
-			log.Printf("failed to send no ogn id: %v", err)
+			slog.Error("failed to send no ogn id", "err", err)
 		}
 		return
 	}
@@ -207,7 +207,7 @@ func (t *Tracker) cmdConfirm(ctx context.Context, b *bot.Bot, update *models.Upd
 			ChatID: m.Chat.ID,
 			Text:   "Группа не найдена. Попросите добавить вас заново.",
 		}); err != nil {
-			log.Printf("failed to send pending group not found: %v", err)
+			slog.Error("failed to send pending group not found", "err", err)
 		}
 		return
 	}
@@ -245,7 +245,7 @@ func (t *Tracker) cmdConfirm(ctx context.Context, b *bot.Bot, update *models.Upd
 		dmParams.ReplyMarkup = dmKb
 	}
 	if _, err := b.SendMessage(ctx, dmParams); err != nil {
-		log.Printf("failed to confirm in DM: %v", err)
+		slog.Error("failed to confirm in DM", "err", err)
 	}
 
 	// Confirm in group.
@@ -258,7 +258,7 @@ func (t *Tracker) cmdConfirm(ctx context.Context, b *bot.Bot, update *models.Upd
 		Text:        "Добавлен " + label,
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to confirm in group: %v", err)
+		slog.Error("failed to confirm in group", "err", err)
 	}
 }
 
@@ -276,7 +276,7 @@ func (t *Tracker) execDMLanding(ctx context.Context, b *bot.Bot, m *models.Messa
 			ChatID: m.Chat.ID,
 			Text:   "Трекинг не активен или OGN ID не задан.",
 		}); err != nil {
-			log.Printf("failed to send DM landing unavailable: %v", err)
+			slog.Error("failed to send DM landing unavailable", "err", err)
 		}
 		return
 	}
@@ -288,7 +288,7 @@ func (t *Tracker) execDMLanding(ctx context.Context, b *bot.Bot, m *models.Messa
 			ChatID: m.Chat.ID,
 			Text:   "Вы не в списке летающих пилотов.",
 		}); err != nil {
-			log.Printf("failed to send DM not flying: %v", err)
+			slog.Error("failed to send DM not flying", "err", err)
 		}
 		return
 	}
@@ -301,7 +301,7 @@ func (t *Tracker) execDMLanding(ctx context.Context, b *bot.Bot, m *models.Messa
 		ChatID: m.Chat.ID,
 		Text:   "Отправьте точку посадки в течение 2 минут",
 	}); err != nil {
-		log.Printf("failed to request DM landing location: %v", err)
+		slog.Error("failed to request DM landing location", "err", err)
 	}
 }
 
@@ -319,7 +319,7 @@ func (t *Tracker) execDMConfirmLanding(ctx context.Context, b *bot.Bot, m *model
 			ChatID: m.Chat.ID,
 			Text:   "Трекинг не активен или OGN ID не задан.",
 		}); err != nil {
-			log.Printf("failed to send DM confirm landing unavailable: %v", err)
+			slog.Error("failed to send DM confirm landing unavailable", "err", err)
 		}
 		return
 	}
@@ -331,7 +331,7 @@ func (t *Tracker) execDMConfirmLanding(ctx context.Context, b *bot.Bot, m *model
 			ChatID: m.Chat.ID,
 			Text:   "Вы не в списке летающих пилотов.",
 		}); err != nil {
-			log.Printf("failed to send DM not flying: %v", err)
+			slog.Error("failed to send DM not flying", "err", err)
 		}
 		return
 	}
@@ -368,7 +368,7 @@ func (t *Tracker) execDMConfirmLanding(ctx context.Context, b *bot.Bot, m *model
 		params.ReplyMarkup = &models.ReplyKeyboardRemove{RemoveKeyboard: true}
 	}
 	if _, err := b.SendMessage(ctx, params); err != nil {
-		log.Printf("failed to confirm DM landing: %v", err)
+		slog.Error("failed to confirm DM landing", "err", err)
 	}
 
 	// Notify the group.
@@ -384,7 +384,7 @@ func (t *Tracker) execDMConfirmLanding(ctx context.Context, b *bot.Bot, m *model
 			ChatID: chatID,
 			Text:   fmt.Sprintf("🪂 %s сел! (подтверждено пилотом)", label),
 		}); err != nil {
-			log.Printf("failed to send landing notification for %s: %v", u.OGNID, err)
+			slog.Error("failed to send landing notification", "ogn_id", u.OGNID, "err", err)
 		}
 	}
 }
@@ -406,7 +406,7 @@ func (t *Tracker) handleDMLanding(ctx context.Context, b *bot.Bot, m *models.Mes
 		return
 	}
 
-	log.Printf("[landing/DM] location set at %.5f,%.5f by user=%d", loc.Latitude, loc.Longitude, m.From.ID)
+	slog.Info("dm landing location set", "lat", loc.Latitude, "lon", loc.Longitude, "user_id", m.From.ID)
 	s.Landing = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
 	s.WaitingDMLandingFor = 0
 
@@ -418,7 +418,7 @@ func (t *Tracker) handleDMLanding(ctx context.Context, b *bot.Bot, m *models.Mes
 			info.LandingTime = time.Now()
 			info.LandingConfirmed = true
 			landedName = info.DisplayName()
-			log.Printf("[landing/DM] marked %s as landed (user=%d)", u.OGNID, m.From.ID)
+			slog.Info("dm landing marked", "ogn_id", u.OGNID, "user_id", m.From.ID)
 		}
 	}
 
@@ -443,7 +443,7 @@ func (t *Tracker) handleDMLanding(ctx context.Context, b *bot.Bot, m *models.Mes
 		params.ReplyMarkup = &models.ReplyKeyboardRemove{RemoveKeyboard: true}
 	}
 	if _, err := b.SendMessage(ctx, params); err != nil {
-		log.Printf("failed to confirm DM landing: %v", err)
+		slog.Error("failed to confirm DM landing", "err", err)
 	}
 
 	// Notify the group.
@@ -456,6 +456,6 @@ func (t *Tracker) handleDMLanding(ctx context.Context, b *bot.Bot, m *models.Mes
 		Text:        groupText,
 		ReplyMarkup: groupKb,
 	}); err != nil {
-		log.Printf("failed to notify group about DM landing: %v", err)
+		slog.Error("failed to notify group about DM landing", "err", err)
 	}
 }

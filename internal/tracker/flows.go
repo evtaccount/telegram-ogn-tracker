@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -23,7 +24,7 @@ func (t *Tracker) execAddDirect(ctx context.Context, b *bot.Bot, m *models.Messa
 			ChatID: m.Chat.ID,
 			Text:   fmt.Sprintf("OGN ID %q некорректен. Ожидаются 6 hex-символов (0-9, A-F).", args[0]),
 		}); err != nil {
-			log.Printf("failed to send invalid ognid message: %v", err)
+			slog.Error("failed to send invalid ognid message", "err", err)
 		}
 		return
 	}
@@ -52,7 +53,7 @@ func (t *Tracker) execAddDirect(ctx context.Context, b *bot.Bot, m *models.Messa
 		}
 	}
 
-	log.Printf("[cmd] /add id=%s name=%q username=%q from user=%d", id, display, username, m.From.ID)
+	slog.Info("cmd /add", "id", id, "name", display, "username", username, "user_id", m.From.ID)
 
 	t.mu.Lock()
 	s := t.session
@@ -104,7 +105,7 @@ func (t *Tracker) execAddDirect(ctx context.Context, b *bot.Bot, m *models.Messa
 		Text:        text,
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to confirm add: %v", err)
+		slog.Error("failed to confirm add", "err", err)
 	}
 }
 
@@ -128,7 +129,7 @@ func (t *Tracker) askSessionResetConfirm(ctx context.Context, b *bot.Bot, chatID
 		Text:        "⚠️ Сбросить сессию? Это действие необратимо.\n\n\"Сбросить\" — трекинг остановится, но добавленные пилоты сохранятся.\n\"Сбросить и удалить пилотов\" — полная очистка.",
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to send session reset confirmation: %v", err)
+		slog.Error("failed to send session reset confirmation", "err", err)
 	}
 }
 
@@ -147,7 +148,7 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 	// Driver: check if this user is waiting.
 	if d, ok := s.Drivers[m.From.ID]; ok && d.Waiting && time.Now().Before(d.Expiry) {
 		if loc.LivePeriod > 0 {
-			log.Printf("[driver] live location received from user=%d at %.5f,%.5f", m.From.ID, loc.Latitude, loc.Longitude)
+			slog.Info("driver live location received", "user_id", m.From.ID, "lat", loc.Latitude, "lon", loc.Longitude)
 			d.Pos = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
 			d.MsgID = m.ID
 			d.Waiting = false
@@ -158,7 +159,7 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 				Text:        "🚗 Водитель активен. Расстояния будут в сводке.",
 				ReplyMarkup: kb,
 			}); err != nil {
-				log.Printf("failed to confirm driver location: %v", err)
+				slog.Error("failed to confirm driver location", "err", err)
 			}
 			return
 		}
@@ -171,14 +172,14 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 			Text:        "📍 Позиция принята. Для непрерывного отслеживания отправьте live-локацию.",
 			ReplyMarkup: kb,
 		}); err != nil {
-			log.Printf("failed to send driver static hint: %v", err)
+			slog.Error("failed to send driver static hint", "err", err)
 		}
 		return
 	}
 
 	// Landing: expecting a static location pin.
 	if s.WaitingLanding && time.Now().Before(s.LandingExpiry) {
-		log.Printf("[landing] location set at %.5f,%.5f by user=%d", loc.Latitude, loc.Longitude, m.From.ID)
+		slog.Info("landing location set", "lat", loc.Latitude, "lon", loc.Longitude, "user_id", m.From.ID)
 		s.Landing = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
 		s.WaitingLanding = false
 
@@ -189,7 +190,7 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 				info.Status = StatusLanded
 				info.LandingTime = time.Now()
 				landedName = info.DisplayName()
-				log.Printf("[landing] marked %s as landed (user=%d)", u.OGNID, m.From.ID)
+				slog.Info("landing marked", "ogn_id", u.OGNID, "user_id", m.From.ID)
 			}
 		}
 
@@ -206,14 +207,14 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 			Text:        text,
 			ReplyMarkup: kb,
 		}); err != nil {
-			log.Printf("failed to confirm landing location: %v", err)
+			slog.Error("failed to confirm landing location", "err", err)
 		}
 		return
 	}
 
 	// Area: expecting center location.
 	if s.WaitingArea && time.Now().Before(s.AreaExpiry) {
-		log.Printf("[area] center set at %.5f,%.5f radius=%dkm by user=%d", loc.Latitude, loc.Longitude, s.TrackAreaRadius, m.From.ID)
+		slog.Info("area center set", "lat", loc.Latitude, "lon", loc.Longitude, "radius_km", s.TrackAreaRadius, "user_id", m.From.ID)
 		s.TrackArea = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
 		s.WaitingArea = false
 		// Remove previously auto-discovered entries when area changes.
@@ -232,7 +233,7 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 			Text:        fmt.Sprintf("📡 Зона активна: радиус %dкм", radius),
 			ReplyMarkup: kb,
 		}); err != nil {
-			log.Printf("failed to confirm area location: %v", err)
+			slog.Error("failed to confirm area location", "err", err)
 		}
 		return
 	}
@@ -243,7 +244,7 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 // execSessionReset stops tracking and creates a new session.
 // If wipePilots is false, the pilot list is preserved for quick restart.
 func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64, wipePilots bool) {
-	log.Printf("[session] reset chat=%d wipePilots=%v", chatID, wipePilots)
+	slog.Info("session reset", "chat_id", chatID, "wipe_pilots", wipePilots)
 	t.mu.Lock()
 	if t.session != nil {
 		t.stopTrackingAsync()
@@ -284,7 +285,7 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 		Text:        text,
 		ReplyMarkup: markup,
 	}); err != nil {
-		log.Printf("failed to send session_reset message: %v", err)
+		slog.Error("failed to send session_reset message", "err", err)
 	}
 }
 
@@ -299,7 +300,7 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 			ChatID: chatID,
 			Text:   "Нет адресов. Используйте /add <id> или /area.",
 		}); err != nil {
-			log.Printf("failed to send no addresses message: %v", err)
+			slog.Error("failed to send no addresses message", "err", err)
 		}
 		return
 	}
@@ -309,7 +310,7 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 			ChatID: chatID,
 			Text:   "Остановите радар перед запуском трекинга.",
 		}); err != nil {
-			log.Printf("failed to send radar conflict message: %v", err)
+			slog.Error("failed to send radar conflict message", "err", err)
 		}
 		return
 	}
@@ -321,7 +322,7 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 			Text:        "Трекинг уже включён",
 			ReplyMarkup: kb,
 		}); err != nil {
-			log.Printf("failed to confirm track_on: %v", err)
+			slog.Error("failed to confirm track_on", "err", err)
 		}
 		return
 	}
@@ -351,7 +352,7 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	hasArea := s.TrackArea != nil
 	t.mu.Unlock()
 
-	log.Printf("[tracking] ON: %d pilots, area=%v, chat=%d", count, hasArea, chatID)
+	slog.Info("tracking on", "pilots", count, "area", hasArea, "chat_id", chatID)
 	go t.runClient(stopCh, aprs)
 	go t.sendUpdates(stopCh)
 
@@ -360,7 +361,7 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 		Text:        "Трекинг включён",
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to confirm track_on: %v", err)
+		slog.Error("failed to confirm track_on", "err", err)
 	}
 }
 
@@ -379,7 +380,7 @@ func (t *Tracker) askStartChoice(ctx context.Context, b *bot.Bot, chatID int64) 
 		Text:        "Есть пилоты из прошлой сессии. Продолжить или начать новую?",
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to send start choice: %v", err)
+		slog.Error("failed to send start choice", "err", err)
 	}
 }
 
@@ -395,7 +396,7 @@ func (t *Tracker) askTrackOffConfirm(ctx context.Context, b *bot.Bot, chatID int
 			Text:        "Трекинг уже выключен",
 			ReplyMarkup: kb,
 		}); err != nil {
-			log.Printf("failed to confirm track_off: %v", err)
+			slog.Error("failed to confirm track_off", "err", err)
 		}
 		return
 	}
@@ -414,7 +415,7 @@ func (t *Tracker) askTrackOffConfirm(ctx context.Context, b *bot.Bot, chatID int
 		Text:        "Остановить трекинг?",
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to send track_off confirmation: %v", err)
+		slog.Error("failed to send track_off confirmation", "err", err)
 	}
 }
 
@@ -429,14 +430,14 @@ func (t *Tracker) execTrackOff(ctx context.Context, b *bot.Bot, chatID int64) {
 	kb := s.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
-	log.Printf("[tracking] OFF chat=%d", chatID)
+	slog.Info("tracking off", "chat_id", chatID)
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        "Трекинг выключен",
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to confirm track_off: %v", err)
+		slog.Error("failed to confirm track_off", "err", err)
 	}
 }
 
@@ -494,7 +495,7 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 		Text:        text,
 		ReplyMarkup: replyMarkup,
 	}); err != nil {
-		log.Printf("failed to send list: %v", err)
+		slog.Error("failed to send list", "err", err)
 	}
 }
 
@@ -510,7 +511,7 @@ func (t *Tracker) execLanding(ctx context.Context, b *bot.Bot, chatID int64) {
 		ChatID: chatID,
 		Text:   "Отправьте точку посадки в течение 2 минут",
 	}); err != nil {
-		log.Printf("failed to request landing location: %v", err)
+		slog.Error("failed to request landing location", "err", err)
 	}
 }
 
@@ -527,12 +528,12 @@ func (t *Tracker) execArea(ctx context.Context, b *bot.Bot, chatID int64, radius
 		ChatID: chatID,
 		Text:   fmt.Sprintf("Отправьте центр зоны (радиус %dкм) в течение 2 минут", radiusKm),
 	}); err != nil {
-		log.Printf("failed to request area location: %v", err)
+		slog.Error("failed to request area location", "err", err)
 	}
 }
 
 func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) {
-	log.Printf("[area] off chat=%d", chatID)
+	slog.Info("area off", "chat_id", chatID)
 	t.mu.Lock()
 	s := t.session
 	// Stop radar if it's running — radar requires an area.
@@ -559,7 +560,7 @@ func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) {
 		Text:        "📡 Зона отключена",
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to confirm area off: %v", err)
+		slog.Error("failed to confirm area off", "err", err)
 	}
 }
 
@@ -574,7 +575,7 @@ func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64, rad
 			ChatID: chatID,
 			Text:   "Сначала задайте зону: /area",
 		}); err != nil {
-			log.Printf("failed to send radar no-area message: %v", err)
+			slog.Error("failed to send radar no-area message", "err", err)
 		}
 		return
 	}
@@ -584,7 +585,7 @@ func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64, rad
 			ChatID: chatID,
 			Text:   "Остановите трекинг перед включением радара.",
 		}); err != nil {
-			log.Printf("failed to send radar conflict message: %v", err)
+			slog.Error("failed to send radar conflict message", "err", err)
 		}
 		return
 	}
@@ -596,7 +597,7 @@ func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64, rad
 			Text:        "Радар уже включён",
 			ReplyMarkup: kb,
 		}); err != nil {
-			log.Printf("failed to confirm radar on: %v", err)
+			slog.Error("failed to confirm radar on", "err", err)
 		}
 		return
 	}
@@ -627,7 +628,7 @@ func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64, rad
 	areaLat, areaLon := s.TrackArea.Latitude, s.TrackArea.Longitude
 	t.mu.Unlock()
 
-	log.Printf("[radar] ON: area=%.5f,%.5f r=%dkm chat=%d", areaLat, areaLon, radiusKm, chatID)
+	slog.Info("radar on", "lat", areaLat, "lon", areaLon, "radius_km", radiusKm, "chat_id", chatID)
 	go t.runRadarClient(stopCh, aprs)
 	go t.sendRadarUpdates(stopCh)
 
@@ -636,7 +637,7 @@ func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64, rad
 		Text:        fmt.Sprintf("📡 Радар включён (зона %dкм)", radiusKm),
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to confirm radar on: %v", err)
+		slog.Error("failed to confirm radar on", "err", err)
 	}
 }
 
@@ -653,13 +654,13 @@ func (t *Tracker) execRadarOff(ctx context.Context, b *bot.Bot, chatID int64) {
 	kb := s.replyKeyboard()
 	t.mu.Unlock()
 
-	log.Printf("[radar] OFF chat=%d", chatID)
+	slog.Info("radar off", "chat_id", chatID)
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        "📡 Радар выключен",
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to confirm radar off: %v", err)
+		slog.Error("failed to confirm radar off", "err", err)
 	}
 }
 
@@ -679,7 +680,7 @@ func (t *Tracker) execRadarAskRadius(ctx context.Context, b *bot.Bot, chatID int
 		ChatID: chatID,
 		Text:   fmt.Sprintf("Введите радиус в км (1–%d). Текущий: %dкм", maxAreaRadius, s.RadarRadius),
 	}); err != nil {
-		log.Printf("failed to send radar radius prompt: %v", err)
+		slog.Error("failed to send radar radius prompt", "err", err)
 	}
 }
 
@@ -713,7 +714,7 @@ func (t *Tracker) execRadarSetRadius(ctx context.Context, b *bot.Bot, chatID int
 	kb := s.replyKeyboard()
 	t.mu.Unlock()
 
-	log.Printf("[radar] radius changed to %dkm chat=%d", radiusKm, chatID)
+	slog.Info("radar radius changed", "radius_km", radiusKm, "chat_id", chatID)
 	go t.runRadarClient(stopCh, aprs)
 	go t.sendRadarUpdates(stopCh)
 
@@ -722,7 +723,7 @@ func (t *Tracker) execRadarSetRadius(ctx context.Context, b *bot.Bot, chatID int
 		Text:        fmt.Sprintf("📡 Радиус радара: %dкм", radiusKm),
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to confirm radar radius: %v", err)
+		slog.Error("failed to confirm radar radius", "err", err)
 	}
 }
 
@@ -739,7 +740,7 @@ func (t *Tracker) execDriver(ctx context.Context, b *bot.Bot, chatID int64, user
 			Text:        "🚗 Вы уже водитель. /driver_off чтобы остановить.",
 			ReplyMarkup: kb,
 		}); err != nil {
-			log.Printf("failed to send driver active message: %v", err)
+			slog.Error("failed to send driver active message", "err", err)
 		}
 		return
 	}
@@ -755,13 +756,13 @@ func (t *Tracker) execDriver(ctx context.Context, b *bot.Bot, chatID int64, user
 	}
 	s.ChatID = chatID
 	t.mu.Unlock()
-	log.Printf("[driver] waiting for location from user=%d @%s", userID, username)
+	slog.Info("driver waiting for location", "user_id", userID, "username", username)
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: chatID,
 		Text:   "Отправьте live-локацию в течение 2 минут, чтобы стать водителем.",
 	}); err != nil {
-		log.Printf("failed to send driver prompt: %v", err)
+		slog.Error("failed to send driver prompt", "err", err)
 	}
 
 	go t.driverWaitTimeout(gen, userID, chatID, username)
@@ -804,7 +805,7 @@ func (t *Tracker) driverWaitTimeout(gen int, userID int64, chatID int64, usernam
 		Text:      text,
 		ParseMode: models.ParseModeHTML,
 	}); err != nil {
-		log.Printf("failed to send driver reminder: %v", err)
+		slog.Error("failed to send driver reminder", "err", err)
 	}
 
 	time.Sleep(driverReminder)
@@ -824,11 +825,11 @@ func (t *Tracker) driverWaitTimeout(gen int, userID int64, chatID int64, usernam
 		delete(t.session.Drivers, userID)
 	}
 	t.mu.Unlock()
-	log.Printf("driver wait timed out for user %d", userID)
+	slog.Info("driver wait timed out", "user_id", userID)
 }
 
 func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, userID int64) {
-	log.Printf("[driver] off user=%d", userID)
+	slog.Info("driver off", "user_id", userID)
 	t.mu.Lock()
 	s := t.session
 	_, was := s.Drivers[userID]
@@ -845,13 +846,13 @@ func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, u
 		Text:        text,
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to confirm driver off: %v", err)
+		slog.Error("failed to confirm driver off", "err", err)
 	}
 }
 
 // execPickup marks a pilot as picked up (StatusPickedUp) and confirms in the group.
 func (t *Tracker) execPickup(ctx context.Context, b *bot.Bot, id string) {
-	log.Printf("[pickup] id=%s", id)
+	slog.Info("pickup", "id", id)
 	t.mu.Lock()
 	s := t.session
 	if s == nil {
@@ -880,6 +881,6 @@ func (t *Tracker) execPickup(ctx context.Context, b *bot.Bot, id string) {
 		ChatID: chatID,
 		Text:   fmt.Sprintf("✅ %s забран", label),
 	}); err != nil {
-		log.Printf("failed to confirm pickup for %s: %v", id, err)
+		slog.Error("failed to confirm pickup", "id", id, "err", err)
 	}
 }
