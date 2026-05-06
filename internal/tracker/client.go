@@ -3,7 +3,7 @@ package tracker
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -39,18 +39,18 @@ func nextReconnectDelay(d time.Duration) time.Duration {
 // was launched with; the Tracker.aprs field can be reassigned by other goroutines
 // without racing on this read path.
 func (t *Tracker) runClient(stopCh <-chan struct{}, aprs *client.Client) {
-	log.Println("OGN client started")
+	slog.Info("OGN client started")
 	delay := reconnectDelay
 	for {
 		select {
 		case <-stopCh:
-			log.Println("OGN client stopped")
+			slog.Info("OGN client stopped")
 			return
 		default:
 		}
 
 		err := aprs.Run(func(line string) {
-			log.Printf("[OGN line] %s", line)
+			slog.Debug("ogn line", "line", line)
 			msg, err := parser.ParsePosition(line)
 			if err != nil {
 				return
@@ -58,14 +58,18 @@ func (t *Tracker) runClient(stopCh <-chan struct{}, aprs *client.Client) {
 			origID := msg.Callsign
 			id := shortID(origID)
 
-			log.Printf("[OGN raw] callsign=%s dst=%s receiver=%s relay=%s ts=%s lat=%.5f lon=%.5f alt=%.0f crs=%d spd=%.1f climb=%.1f turn=%.1f snr=%.1f err=%d foff=%.1f gps=%s fl=%.0f pwr=%.1f sw=%.1f hw=%d addr=%s atype=%d real=%s stealth=%v notrack=%v comment=%q",
-				msg.Callsign, msg.DstCall, msg.ReceiverName, msg.Relay,
-				msg.Timestamp.Format("15:04:05"), msg.Latitude, msg.Longitude,
-				msg.Altitude, msg.Course, msg.GroundSpeed, msg.ClimbRate,
-				msg.TurnRate, msg.SignalQuality, msg.ErrorCount, msg.FreqOffset,
-				msg.GPSQuality, msg.FlightLevel, msg.SignalPower, msg.SoftwareVer,
-				msg.HardwareVer, msg.Address, msg.AircraftType, msg.RealAddress,
-				msg.Stealth, msg.NoTracking, msg.UserComment)
+			slog.Debug("ogn beacon parsed",
+				"callsign", msg.Callsign, "dst", msg.DstCall,
+				"receiver", msg.ReceiverName, "relay", msg.Relay,
+				"ts", msg.Timestamp.Format("15:04:05"),
+				"lat", msg.Latitude, "lon", msg.Longitude, "alt", msg.Altitude,
+				"course", msg.Course, "speed", msg.GroundSpeed, "climb", msg.ClimbRate,
+				"turn", msg.TurnRate, "snr", msg.SignalQuality, "err_count", msg.ErrorCount,
+				"freq_offset", msg.FreqOffset, "gps", msg.GPSQuality, "fl", msg.FlightLevel,
+				"power", msg.SignalPower, "sw", msg.SoftwareVer, "hw", msg.HardwareVer,
+				"addr", msg.Address, "aircraft_type", msg.AircraftType,
+				"real_addr", msg.RealAddress, "stealth", msg.Stealth,
+				"no_tracking", msg.NoTracking, "comment", msg.UserComment)
 
 			var alert *landingEvent
 
@@ -81,7 +85,7 @@ func (t *Tracker) runClient(stopCh <-chan struct{}, aprs *client.Client) {
 				info = &TrackInfo{AutoDiscovered: true}
 				s.Tracking[id] = info
 				ok = true
-				log.Printf("auto-discovered %s in area", id)
+				slog.Info("auto-discovered aircraft in area", "id", id)
 			}
 			if ok && info.Status != StatusPickedUp && !(info.Status == StatusLanded && info.LandingConfirmed) {
 				info.Position = msg
@@ -99,7 +103,7 @@ func (t *Tracker) runClient(stopCh <-chan struct{}, aprs *client.Client) {
 						time: info.LandingTime,
 						tz:   s.tz(),
 					}
-					log.Printf("landing detected for %s at %.5f,%.5f", id, msg.Latitude, msg.Longitude)
+					slog.Info("landing detected", "id", id, "lat", msg.Latitude, "lon", msg.Longitude)
 				}
 			}
 			chatID := s.ChatID
@@ -113,10 +117,10 @@ func (t *Tracker) runClient(stopCh <-chan struct{}, aprs *client.Client) {
 			}
 		}, false)
 		if err != nil {
-			log.Printf("OGN client error (retry in %v): %v", delay, err)
+			slog.Error("ogn client error", "retry_in", delay, "err", err)
 			select {
 			case <-stopCh:
-				log.Println("OGN client stopped")
+				slog.Info("OGN client stopped")
 				return
 			case <-time.After(delay):
 			}
@@ -157,7 +161,7 @@ func (t *Tracker) sendLandingAlert(e *landingEvent, chatID int64) {
 		Text:        text,
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to send landing alert for %s: %v", e.id, err)
+		slog.Error("failed to send landing alert", "id", e.id, "err", err)
 	}
 }
 
@@ -244,7 +248,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 					editParams.Heading = heading
 				}
 				if _, err := b.EditMessageLiveLocation(ctx, editParams); err != nil && !isMessageNotModified(err) {
-					log.Printf("failed to edit location for %s: %v", id, err)
+					slog.Error("failed to edit location", "id", id, "err", err)
 				}
 			} else {
 				sendParams := &bot.SendLocationParams{
@@ -258,7 +262,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 				}
 				locMsg, err := b.SendLocation(ctx, sendParams)
 				if err != nil {
-					log.Printf("failed to send location for %s: %v", id, err)
+					slog.Error("failed to send location", "id", id, "err", err)
 					continue
 				}
 				t.mu.Lock()
@@ -268,7 +272,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 					}
 				}
 				t.mu.Unlock()
-				log.Printf("sent location for %s", id)
+				slog.Info("sent location", "id", id)
 			}
 		}
 
@@ -285,7 +289,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 				editParams.ReplyMarkup = kb
 			}
 			if _, err := b.EditMessageText(ctx, editParams); err != nil && !isMessageNotModified(err) {
-				log.Printf("failed to edit summary: %v", err)
+				slog.Error("failed to edit summary", "err", err)
 			}
 		} else {
 			sendParams := &bot.SendMessageParams{
@@ -297,7 +301,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			}
 			msg, err := b.SendMessage(ctx, sendParams)
 			if err != nil {
-				log.Printf("failed to send summary: %v", err)
+				slog.Error("failed to send summary", "err", err)
 			} else {
 				t.mu.Lock()
 				if t.session != nil {
@@ -315,12 +319,12 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 // Unlike runClient, it does not do landing detection or modify session.Tracking.
 // See runClient for why aprs is passed explicitly.
 func (t *Tracker) runRadarClient(stopCh <-chan struct{}, aprs *client.Client) {
-	log.Println("Radar client started")
+	slog.Info("Radar client started")
 	delay := reconnectDelay
 	for {
 		select {
 		case <-stopCh:
-			log.Println("Radar client stopped")
+			slog.Info("Radar client stopped")
 			return
 		default:
 		}
@@ -349,10 +353,10 @@ func (t *Tracker) runRadarClient(stopCh <-chan struct{}, aprs *client.Client) {
 			t.mu.Unlock()
 		}, false)
 		if err != nil {
-			log.Printf("Radar client error (retry in %v): %v", delay, err)
+			slog.Error("radar client error", "retry_in", delay, "err", err)
 			select {
 			case <-stopCh:
-				log.Println("Radar client stopped")
+				slog.Info("Radar client stopped")
 				return
 			case <-time.After(delay):
 			}
@@ -431,7 +435,7 @@ func (t *Tracker) sendRadarUpdates(stopCh <-chan struct{}) {
 				ep.ReplyMarkup = kb
 			}
 			if _, err := b.EditMessageText(ctx, ep); err != nil && !isMessageNotModified(err) {
-				log.Printf("failed to edit radar summary: %v", err)
+				slog.Error("failed to edit radar summary", "err", err)
 			}
 		} else {
 			sp := &bot.SendMessageParams{
@@ -443,7 +447,7 @@ func (t *Tracker) sendRadarUpdates(stopCh <-chan struct{}) {
 			}
 			msg, err := b.SendMessage(ctx, sp)
 			if err != nil {
-				log.Printf("failed to send radar summary: %v", err)
+				slog.Error("failed to send radar summary", "err", err)
 			} else {
 				t.mu.Lock()
 				if t.session != nil {

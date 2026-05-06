@@ -2,7 +2,7 @@ package tracker
 
 import (
 	"context"
-	"log"
+	"log/slog"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -13,7 +13,7 @@ func (t *Tracker) answerCallback(ctx context.Context, b *bot.Bot, cq *models.Cal
 	if _, err := b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
 		CallbackQueryID: cq.ID,
 	}); err != nil {
-		log.Printf("failed to answer callback query: %v", err)
+		slog.Error("failed to answer callback query", "err", err)
 	}
 }
 

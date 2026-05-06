@@ -3,7 +3,7 @@ package tracker
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -34,12 +34,12 @@ func (t *Tracker) requireGroupChat(ctx context.Context, b *bot.Bot, m *models.Me
 			ChatID: m.Chat.ID,
 			Text:   "Эта команда работает только в группе.",
 		}); err != nil {
-			log.Printf("failed to send group-only message: %v", err)
+			slog.Error("failed to send group-only message", "err", err)
 		}
 		return false
 	}
 	if !t.isAllowedChat(m.Chat.ID) {
-		log.Printf("[acl] dropping command from non-allowed chat %d (user=%d)", m.Chat.ID, m.From.ID)
+		slog.Warn("dropping command from non-allowed chat", "chat_id", m.Chat.ID, "user_id", m.From.ID)
 		return false
 	}
 	return true
@@ -55,7 +55,7 @@ func (t *Tracker) requireSession(ctx context.Context, b *bot.Bot, chatID int64) 
 			ChatID: chatID,
 			Text:   "Сначала выполните /start",
 		}); err != nil {
-			log.Printf("failed to send session required message: %v", err)
+			slog.Error("failed to send session required message", "err", err)
 		}
 	}
 	return active
@@ -79,7 +79,7 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
-	log.Printf("[cmd] /start from user=%d chat=%d type=%s", m.From.ID, m.Chat.ID, m.Chat.Type)
+	slog.Info("cmd /start", "user_id", m.From.ID, "chat_id", m.Chat.ID, "chat_type", m.Chat.Type)
 
 	if isPrivateChat(m.Chat) {
 		t.cmdStartPrivate(ctx, b, m)
@@ -87,7 +87,7 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	}
 
 	if !t.isAllowedChat(m.Chat.ID) {
-		log.Printf("[acl] dropping /start from non-allowed chat %d (user=%d)", m.Chat.ID, m.From.ID)
+		slog.Warn("dropping /start from non-allowed chat", "chat_id", m.Chat.ID, "user_id", m.From.ID)
 		return
 	}
 
@@ -117,7 +117,7 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 		Text:        "Сессия начата. Используйте /add <id> или /area.",
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to send start message: %v", err)
+		slog.Error("failed to send start message", "err", err)
 	}
 }
 
@@ -153,7 +153,7 @@ func (t *Tracker) cmdStartSession(ctx context.Context, b *bot.Bot, update *model
 		Text:        "Сессия пересоздана. Все пилоты удалены. Используйте /add <id> или /area.",
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to send start_session message: %v", err)
+		slog.Error("failed to send start_session message", "err", err)
 	}
 }
 
@@ -180,7 +180,7 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 			ChatID: m.Chat.ID,
 			Text:   "Эта команда работает только в группе.",
 		}); err != nil {
-			log.Printf("failed to send group-only message: %v", err)
+			slog.Error("failed to send group-only message", "err", err)
 		}
 		return
 	}
@@ -233,13 +233,13 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 			ChatID: m.Chat.ID,
 			Text:   "Написал вам в личку",
 		}); err != nil {
-			log.Printf("failed to confirm DM sent in group: %v", err)
+			slog.Error("failed to confirm DM sent in group", "err", err)
 		}
 		return
 	}
 
 	// Can't send DM — show deep link button.
-	log.Printf("failed to send DM to user %d, showing deep link: %v", m.From.ID, dmErr)
+	slog.Warn("failed to send DM, falling back to deep link", "user_id", m.From.ID, "err", dmErr)
 	deepLink := fmt.Sprintf("https://t.me/%s?start=add_%d", botUsername, groupChatID)
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -253,7 +253,7 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 		Text:        "Напишите мне в личку, чтобы добавить свой трекер",
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to send deep link button: %v", err)
+		slog.Error("failed to send deep link button", "err", err)
 	}
 }
 
@@ -272,12 +272,12 @@ func (t *Tracker) cmdRemove(ctx context.Context, b *bot.Bot, update *models.Upda
 			ChatID: m.Chat.ID,
 			Text:   "Использование: /remove <ogn_id>",
 		}); err != nil {
-			log.Printf("failed to send usage: %v", err)
+			slog.Error("failed to send usage", "err", err)
 		}
 		return
 	}
 	id := shortID(args)
-	log.Printf("[cmd] /remove id=%s from user=%d", id, m.From.ID)
+	slog.Info("cmd /remove", "id", id, "user_id", m.From.ID)
 
 	t.mu.Lock()
 	s := t.session
@@ -293,7 +293,7 @@ func (t *Tracker) cmdRemove(ctx context.Context, b *bot.Bot, update *models.Upda
 		Text:        "Удалён " + id,
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to confirm remove: %v", err)
+		slog.Error("failed to confirm remove", "err", err)
 	}
 }
 
@@ -360,7 +360,7 @@ func (t *Tracker) cmdStatus(ctx context.Context, b *bot.Bot, update *models.Upda
 		Text:        text,
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to send status: %v", err)
+		slog.Error("failed to send status", "err", err)
 	}
 }
 
@@ -393,7 +393,7 @@ func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) 
 			ChatID: m.Chat.ID,
 			Text:   fmt.Sprintf("Часовой пояс: %s\nИспользование: /tz Europe/Kyiv", cur),
 		}); err != nil {
-			log.Printf("failed to send tz usage: %v", err)
+			slog.Error("failed to send tz usage", "err", err)
 		}
 		return
 	}
@@ -404,7 +404,7 @@ func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) 
 			ChatID: m.Chat.ID,
 			Text:   "Неизвестный часовой пояс. Используйте формат IANA, например: Europe/Kyiv, America/New_York, Asia/Tokyo",
 		}); err != nil {
-			log.Printf("failed to send tz error: %v", err)
+			slog.Error("failed to send tz error", "err", err)
 		}
 		return
 	}
@@ -413,14 +413,14 @@ func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) 
 	t.session.Timezone = loc
 	t.saveState()
 	t.mu.Unlock()
-	log.Printf("[tz] set to %s", loc.String())
+	slog.Info("timezone set", "tz", loc.String())
 
 	now := time.Now().In(loc).Format("15:04:05")
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: m.Chat.ID,
 		Text:   fmt.Sprintf("Часовой пояс: %s (сейчас: %s)", loc.String(), now),
 	}); err != nil {
-		log.Printf("failed to confirm tz: %v", err)
+		slog.Error("failed to confirm tz", "err", err)
 	}
 }
 
@@ -458,7 +458,7 @@ func (t *Tracker) cmdHelp(ctx context.Context, b *bot.Bot, update *models.Update
 		ChatID: m.Chat.ID,
 		Text:   text,
 	}); err != nil {
-		log.Printf("failed to send help: %v", err)
+		slog.Error("failed to send help", "err", err)
 	}
 }
 
@@ -486,7 +486,7 @@ func (t *Tracker) cmdDebugWipe(ctx context.Context, b *bot.Bot, update *models.U
 			RemoveKeyboard: true,
 		},
 	}); err != nil {
-		log.Printf("failed to send wipe confirmation: %v", err)
+		slog.Error("failed to send wipe confirmation", "err", err)
 	}
 }
 
@@ -556,7 +556,7 @@ func (t *Tracker) cmdRadar(ctx context.Context, b *bot.Bot, update *models.Updat
 				ChatID: m.Chat.ID,
 				Text:   fmt.Sprintf("Неверный радиус. Используйте /radar <число> (1–%d)", maxAreaRadius),
 			}); err != nil {
-				log.Printf("failed to send invalid radar arg message: %v", err)
+				slog.Error("failed to send invalid radar arg message", "err", err)
 			}
 			return
 		}
@@ -565,7 +565,7 @@ func (t *Tracker) cmdRadar(ctx context.Context, b *bot.Bot, update *models.Updat
 				ChatID: m.Chat.ID,
 				Text:   fmt.Sprintf("Радиус должен быть от 1 до %d км", maxAreaRadius),
 			}); err != nil {
-				log.Printf("failed to send radar range message: %v", err)
+				slog.Error("failed to send radar range message", "err", err)
 			}
 			return
 		}

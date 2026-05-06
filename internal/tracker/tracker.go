@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"math"
 	"os"
 	"strconv"
@@ -314,7 +315,7 @@ func parseAllowedChats(env string) map[int64]bool {
 		}
 		id, err := strconv.ParseInt(part, 10, 64)
 		if err != nil {
-			log.Printf("ALLOWED_CHATS: ignoring invalid entry %q: %v", part, err)
+			slog.Warn("ALLOWED_CHATS: ignoring invalid entry", "entry", part, "err", err)
 			continue
 		}
 		m[id] = true
@@ -493,7 +494,7 @@ func (t *Tracker) updateFilter() {
 	if !s.TrackingOn {
 		// No goroutines using the client — just patch the filter for next start.
 		t.aprs.Filter = filter
-		log.Printf("[filter] updated (idle): %q (ids=%d, area=%v)", filter, len(callsigns), s.TrackArea != nil)
+		slog.Info("aprs filter updated (idle)", "filter", filter, "ids", len(callsigns), "area", s.TrackArea != nil)
 		return
 	}
 
@@ -509,7 +510,7 @@ func (t *Tracker) updateFilter() {
 	newStopCh := make(chan struct{})
 	s.StopCh = newStopCh
 
-	log.Printf("[filter] restarting: %q (ids=%d, area=%v)", filter, len(callsigns), s.TrackArea != nil)
+	slog.Info("aprs filter restarting", "filter", filter, "ids", len(callsigns), "area", s.TrackArea != nil)
 
 	go func() {
 		if oldStopCh != nil {
@@ -526,14 +527,14 @@ func (t *Tracker) updateFilter() {
 func (t *Tracker) loadDevices() {
 	devices, err := ddb.GetDevices()
 	if err != nil {
-		log.Printf("failed to load OGN device database: %v", err)
+		slog.Error("failed to load OGN device database", "err", err)
 		return
 	}
 	m := ddb.LookupByID(devices)
 	t.mu.Lock()
 	t.devices = m
 	t.mu.Unlock()
-	log.Printf("loaded %d devices from OGN database", len(m))
+	slog.Info("loaded devices from OGN database", "count", len(m))
 }
 
 // NewTracker creates a Tracker, restores persisted state, fetches the bot
@@ -556,16 +557,16 @@ func NewTracker(b *bot.Bot) *Tracker {
 		for id := range t.allowedChats {
 			ids = append(ids, strconv.FormatInt(id, 10))
 		}
-		log.Printf("[acl] ALLOWED_CHATS active: %s", strings.Join(ids, ","))
+		slog.Info("ALLOWED_CHATS active", "ids", strings.Join(ids, ","))
 	} else {
-		log.Printf("[acl] ALLOWED_CHATS not set; all chats allowed")
+		slog.Info("ALLOWED_CHATS not set; all chats allowed")
 	}
 
 	if me, err := b.GetMe(context.Background()); err == nil {
 		t.botUsername = me.Username
-		log.Printf("bot username: @%s", t.botUsername)
+		slog.Info("bot identity resolved", "username", t.botUsername)
 	} else {
-		log.Printf("failed to get bot info: %v", err)
+		slog.Error("failed to get bot info", "err", err)
 	}
 
 	// Restore previous session.
@@ -628,7 +629,7 @@ func (t *Tracker) Shutdown() {
 		_ = aprs.Disconnect()
 	}
 
-	log.Println("[shutdown] state saved, goroutines stopped")
+	slog.Info("[shutdown] state saved, goroutines stopped")
 }
 
 // ensureUser returns or creates a UserInfo for the given Telegram user.
@@ -667,7 +668,7 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "help", bot.MatchTypeCommand, t.cmdHelp)
 	if os.Getenv("DEBUG") == "1" {
 		b.RegisterHandler(bot.HandlerTypeMessageText, "debug_wipe", bot.MatchTypeCommand, t.cmdDebugWipe)
-		log.Println("[debug] /debug_wipe handler registered (DEBUG=1)")
+		slog.Info("[debug] /debug_wipe handler registered (DEBUG=1)")
 	}
 	b.RegisterHandler(bot.HandlerTypeMessageText, "myid", bot.MatchTypeCommand, t.cmdMyID)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "confirm", bot.MatchTypeCommand, t.cmdConfirm)
@@ -694,7 +695,7 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	// Auto-resume tracking if it was active before restart.
 	if t.resumeOnStart && t.session != nil {
 		if !t.isAllowedChat(t.session.ChatID) {
-			log.Printf("[acl] not auto-resuming tracking: chat %d is not in ALLOWED_CHATS", t.session.ChatID)
+			slog.Warn("not auto-resuming tracking: chat not in ALLOWED_CHATS", "chat_id", t.session.ChatID)
 			return
 		}
 		t.mu.Lock()
@@ -705,7 +706,7 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 		t.mu.Unlock()
 		go t.runClient(stopCh, aprs)
 		go t.sendUpdates(stopCh)
-		log.Println("auto-resumed tracking from saved session")
+		slog.Info("auto-resumed tracking from saved session")
 	}
 }
 
@@ -764,7 +765,7 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 	// Drop any group-chat update that is not in the allow-list. DMs are
 	// unaffected — they need to remain reachable so deep-link /add works.
 	if isGroupChat(m.Chat) && !t.isAllowedChat(m.Chat.ID) {
-		log.Printf("[acl] dropping group update from non-allowed chat %d (user=%d)", m.Chat.ID, m.From.ID)
+		slog.Warn("dropping group update from non-allowed chat", "chat_id", m.Chat.ID, "user_id", m.From.ID)
 		return
 	}
 
@@ -805,7 +806,7 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 					ChatID: chatID,
 					Text:   fmt.Sprintf("Укажите число от 1 до %d", maxAreaRadius),
 				}); err != nil {
-					log.Printf("failed to send invalid radar radius message: %v", err)
+					slog.Error("failed to send invalid radar radius message", "err", err)
 				}
 			} else {
 				t.execRadarSetRadius(ctx, b, chatID, r)
@@ -896,7 +897,7 @@ func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Messag
 			ChatID: m.Chat.ID,
 			Text:   fmt.Sprintf("Группа %d не найдена. Попросите добавить вас заново.", pendingGroup),
 		}); err != nil {
-			log.Printf("failed to send pending group not found: %v", err)
+			slog.Error("failed to send pending group not found", "err", err)
 		}
 		return
 	}
@@ -908,7 +909,7 @@ func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Messag
 			ChatID: m.Chat.ID,
 			Text:   "Это не похоже на OGN ID. Пришлите 6 шестнадцатеричных символов (0-9, A-F), например FE0E4A.",
 		}); err != nil {
-			log.Printf("failed to send invalid ognid message: %v", err)
+			slog.Error("failed to send invalid ognid message", "err", err)
 		}
 		return
 	}
@@ -948,7 +949,7 @@ func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Messag
 		dmParams.ReplyMarkup = dmKb
 	}
 	if _, err := b.SendMessage(ctx, dmParams); err != nil {
-		log.Printf("failed to confirm add in DM: %v", err)
+		slog.Error("failed to confirm add in DM", "err", err)
 	}
 
 	// Confirm in group.
@@ -961,7 +962,7 @@ func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Messag
 		Text:        "Добавлен " + label,
 		ReplyMarkup: kb,
 	}); err != nil {
-		log.Printf("failed to confirm add in group: %v", err)
+		slog.Error("failed to confirm add in group", "err", err)
 	}
 }
 
