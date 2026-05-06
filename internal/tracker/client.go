@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -16,25 +15,11 @@ import (
 )
 
 const (
-	staleThreshold         = 5 * time.Minute  // данные старше этого помечаются предупреждением
-	landingSpeedThreshold  = 5.0              // km/h — ниже скорости пешехода, отсекает GPS-шум
-	landingClimbThreshold  = 0.3              // m/s — любой термик даёт > 0.3 м/с набора
-	landingConfirmDuration = 90 * time.Second // сколько пилот должен быть неподвижен для подтверждения посадки
-	updateInterval         = 30 * time.Second // интервал обновления сводки и live-локаций
-	liveLocationPeriod     = 86400            // секунды жизни live-локации в Telegram (24ч)
-	reconnectDelay         = 5 * time.Second  // задержка перед переподключением к OGN APRS
+	staleThreshold     = 5 * time.Minute  // данные старше этого помечаются предупреждением
+	updateInterval     = 30 * time.Second // интервал обновления сводки и live-локаций
+	liveLocationPeriod = 86400            // секунды жизни live-локации в Telegram (24ч)
+	reconnectDelay     = 5 * time.Second  // задержка перед переподключением к OGN APRS
 )
-
-// landingEvent captures data for a landing alert sent outside the mutex.
-type landingEvent struct {
-	id   string
-	name string
-	lat  float64
-	lon  float64
-	alt  float64
-	time time.Time
-	tz   *time.Location
-}
 
 // runClient connects to the OGN APRS server and processes position messages
 // in an infinite reconnect loop until stopCh is closed.
@@ -88,35 +73,17 @@ func (t *Tracker) runClient(stopCh <-chan struct{}, aprs *client.Client) {
 			if ok && info.Status != StatusPickedUp && !(info.Status == StatusLanded && info.LandingConfirmed) {
 				info.Position = msg
 				info.LastUpdate = time.Now()
-
-				// Landing detection: speed AND climb rate near zero for landingConfirmDuration.
-				// Speed alone is insufficient — a pilot thermalling in a weak lift
-				// can have low ground speed but positive climb rate.
-				// Altitude above terrain is unavailable without DEM data, so we rely
-				// on the combination of near-zero speed and near-zero vertical speed.
-				if info.Status == StatusFlying {
-					onGround := msg.GroundSpeed < landingSpeedThreshold &&
-						math.Abs(msg.ClimbRate) < landingClimbThreshold
-					if onGround {
-						if info.LowSpeedSince.IsZero() {
-							info.LowSpeedSince = time.Now()
-						} else if time.Since(info.LowSpeedSince) > landingConfirmDuration {
-							info.Status = StatusLanded
-							info.LandingTime = time.Now()
-							alert = &landingEvent{
-								id:   id,
-								name: info.DisplayName(),
-								lat:  msg.Latitude,
-								lon:  msg.Longitude,
-								alt:  msg.Altitude,
-								time: info.LandingTime,
-								tz:   s.tz(),
-							}
-							log.Printf("landing detected for %s at %.5f,%.5f", id, msg.Latitude, msg.Longitude)
-						}
-					} else if !onGround {
-						info.LowSpeedSince = time.Time{}
+				if updateLandingState(info, msg, time.Now()) {
+					alert = &landingEvent{
+						id:   id,
+						name: info.DisplayName(),
+						lat:  msg.Latitude,
+						lon:  msg.Longitude,
+						alt:  msg.Altitude,
+						time: info.LandingTime,
+						tz:   s.tz(),
 					}
+					log.Printf("landing detected for %s at %.5f,%.5f", id, msg.Latitude, msg.Longitude)
 				}
 			}
 			chatID := s.ChatID
@@ -176,242 +143,6 @@ func (t *Tracker) sendLandingAlert(e *landingEvent, chatID int64) {
 	}
 }
 
-// nearestDriver returns the distance and bearing from the closest driver to the given point.
-func nearestDriver(lat, lon float64, drivers []*Coordinates) (distKm float64, bearing float64, found bool) {
-	minDist := math.MaxFloat64
-	for _, d := range drivers {
-		dist, b := distanceAndBearing(d.Latitude, d.Longitude, lat, lon)
-		if dist < minDist {
-			minDist = dist
-			bearing = b
-		}
-	}
-	if minDist == math.MaxFloat64 {
-		return 0, 0, false
-	}
-	return minDist, bearing, true
-}
-
-// formatTrackText builds a multi-line text block for one pilot in the summary message:
-// status, altitude, speed, distance to landing, distance from nearest driver.
-func (t *Tracker) formatTrackText(id string, info *TrackInfo, landing *Coordinates, drivers []*Coordinates) string {
-	pos := info.Position
-
-	// Header: status emoji + ID + name/DDB info.
-	text := info.StatusEmoji() + " " + id
-	if info.Name != "" {
-		text += " — " + info.Name
-	} else if info.Username != "" {
-		text += " — " + info.Username
-	} else if info.AutoDiscovered {
-		if ddb := formatDDBInfo(t.devices, id); ddb != "" {
-			text += " — " + ddb
-		}
-		if name, ok := aircraftTypes[pos.AircraftType]; ok && pos.AircraftType > 0 {
-			text += " [" + name + "]"
-		}
-	}
-	if info.Status == StatusLanded && !info.LandingTime.IsZero() {
-		label := "сел"
-		if info.LandingConfirmed {
-			label = "подтв."
-		}
-		text += fmt.Sprintf(" (%s %s)", label, info.LandingTime.In(t.tz()).Format("15:04"))
-	}
-
-	// Stale data warning.
-	if info.Status == StatusFlying && !info.LastUpdate.IsZero() && time.Since(info.LastUpdate) > staleThreshold {
-		mins := int(time.Since(info.LastUpdate).Minutes())
-		text += fmt.Sprintf("\n⚠️ Нет данных %d мин", mins)
-		text += "\n⏱ " + info.LastUpdate.In(t.tz()).Format("15:04:05")
-		return text
-	}
-
-	// Flight data lines.
-	altLine := fmt.Sprintf("\nВысота: %.0fм", pos.Altitude)
-	if info.Status == StatusFlying {
-		altLine += fmt.Sprintf(" (%+.1fм/с)", pos.ClimbRate)
-	}
-	text += altLine
-	if pos.GroundSpeed > 0 {
-		spdLine := fmt.Sprintf("\nСкорость: %.0fкм/ч  Курс: %s", pos.GroundSpeed, formatBearing(float64(pos.Course)))
-		text += spdLine
-	}
-
-	// Distance and bearing to landing.
-	if landing != nil {
-		distKm, bearing := distanceAndBearing(pos.Latitude, pos.Longitude, landing.Latitude, landing.Longitude)
-		text += fmt.Sprintf("\n📍 %.1fкм до посадки (%s)", distKm, formatBearing(bearing))
-	}
-
-	// Distance from nearest driver to landed pilot.
-	if info.Status == StatusLanded {
-		if distKm, bearing, ok := nearestDriver(pos.Latitude, pos.Longitude, drivers); ok {
-			text += fmt.Sprintf("\n🚗 %.1fкм от водителя (%s)", distKm, formatBearing(bearing))
-		}
-	}
-
-	// Last update time.
-	if !info.LastUpdate.IsZero() {
-		text += "\n⏱ " + info.LastUpdate.In(t.tz()).Format("15:04:05")
-	}
-
-	return text
-}
-
-// pilotButtons returns inline buttons for pilots with known positions.
-// Flying pilots get a navigate button; landed pilots get navigate + pickup.
-func pilotButtons(local map[string]*TrackInfo) *models.InlineKeyboardMarkup {
-	type entry struct {
-		id   string
-		info *TrackInfo
-	}
-	var flying, landed []entry
-	for id, info := range local {
-		if info.Position == nil {
-			continue
-		}
-		switch info.Status {
-		case StatusFlying:
-			flying = append(flying, entry{id, info})
-		case StatusLanded:
-			landed = append(landed, entry{id, info})
-		}
-	}
-	if len(flying) == 0 && len(landed) == 0 {
-		return nil
-	}
-	sortByID := func(entries []entry) {
-		sort.Slice(entries, func(i, j int) bool { return entries[i].id < entries[j].id })
-	}
-	sortByID(flying)
-	sortByID(landed)
-
-	var rows [][]models.InlineKeyboardButton
-	for _, e := range flying {
-		label := e.id
-		if name := e.info.DisplayName(); name != "" {
-			label = name
-		}
-		rows = append(rows, []models.InlineKeyboardButton{
-			{Text: "🗺 " + label, URL: mapsNavURL(e.info.Position.Latitude, e.info.Position.Longitude)},
-		})
-	}
-	for _, e := range landed {
-		label := e.id
-		if name := e.info.DisplayName(); name != "" {
-			label = name
-		}
-		rows = append(rows, []models.InlineKeyboardButton{
-			{Text: "🗺 " + label, URL: mapsNavURL(e.info.Position.Latitude, e.info.Position.Longitude)},
-			{Text: "✅ Забрал " + label, CallbackData: "pickup:" + e.id},
-		})
-	}
-	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
-}
-
-// buildSummary composes the full tracking summary message with header counts
-// and per-pilot sections grouped by status (flying, landed, picked up, waiting).
-func (t *Tracker) buildSummary(local map[string]*TrackInfo, landing *Coordinates, drivers []*Coordinates, areaRadius int) string {
-	type entry struct {
-		id   string
-		info *TrackInfo
-	}
-
-	var flying, landed, pickedUp, waiting []entry
-	for id, info := range local {
-		e := entry{id, info}
-		if info.Position == nil {
-			waiting = append(waiting, e)
-		} else {
-			switch info.Status {
-			case StatusFlying:
-				flying = append(flying, e)
-			case StatusLanded:
-				landed = append(landed, e)
-			case StatusPickedUp:
-				pickedUp = append(pickedUp, e)
-			}
-		}
-	}
-
-	sortByID := func(entries []entry) {
-		sort.Slice(entries, func(i, j int) bool { return entries[i].id < entries[j].id })
-	}
-	sortByID(flying)
-	// Sort landed pilots by distance from nearest driver (nearest first).
-	if len(drivers) > 0 && len(landed) > 0 {
-		sort.Slice(landed, func(i, j int) bool {
-			pi := landed[i].info.Position
-			pj := landed[j].info.Position
-			if pi == nil && pj == nil {
-				return landed[i].id < landed[j].id
-			}
-			if pi == nil {
-				return false
-			}
-			if pj == nil {
-				return true
-			}
-			di, _, _ := nearestDriver(pi.Latitude, pi.Longitude, drivers)
-			dj, _, _ := nearestDriver(pj.Latitude, pj.Longitude, drivers)
-			return di < dj
-		})
-	} else {
-		sortByID(landed)
-	}
-	sortByID(pickedUp)
-	sortByID(waiting)
-
-	// Header with counts.
-	total := len(local)
-	header := fmt.Sprintf("📊 %d пилот(ов)", total)
-	var counts []string
-	if len(flying) > 0 {
-		counts = append(counts, fmt.Sprintf("%d в воздухе", len(flying)))
-	}
-	if len(landed) > 0 {
-		counts = append(counts, fmt.Sprintf("%d сели", len(landed)))
-	}
-	if len(pickedUp) > 0 {
-		counts = append(counts, fmt.Sprintf("%d забрали", len(pickedUp)))
-	}
-	if len(counts) > 0 {
-		header += " — " + strings.Join(counts, ", ")
-	}
-	if areaRadius > 0 {
-		header += fmt.Sprintf("\n📡 Зона: радиус %dкм", areaRadius)
-	}
-	if len(drivers) > 0 {
-		header += fmt.Sprintf("\n🚗 %d водитель(ей)", len(drivers))
-	}
-
-	// Build per-pilot sections.
-	var sections []string
-	for _, e := range flying {
-		sections = append(sections, t.formatTrackText(e.id, e.info, landing, drivers))
-	}
-	for _, e := range landed {
-		sections = append(sections, t.formatTrackText(e.id, e.info, landing, drivers))
-	}
-	for _, e := range pickedUp {
-		label := "✅ " + e.id
-		if name := e.info.DisplayName(); name != "" {
-			label += " — " + name
-		}
-		sections = append(sections, label)
-	}
-	for _, e := range waiting {
-		label := "⏳ " + e.id
-		if name := e.info.DisplayName(); name != "" {
-			label += " — " + name
-		}
-		sections = append(sections, label)
-	}
-
-	return header + "\n\n" + strings.Join(sections, "\n\n")
-}
-
 // sendUpdates runs a 30-second ticker that updates live locations on the map
 // and edits (or sends) the pinned summary message in the group chat.
 func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
@@ -450,6 +181,10 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			cp := *info
 			local[id] = &cp
 		}
+		// Capture renderer dependencies under the mutex so the renderer can
+		// run lock-free without racing on t.devices / session.Timezone.
+		devices := t.devices
+		tz := s.tz()
 		t.mu.Unlock()
 
 		if b == nil || len(local) == 0 {
@@ -512,7 +247,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		}
 
 		// Send or update the single summary message.
-		summary := t.buildSummary(local, landing, drivers, areaRadius)
+		summary := buildSummary(local, landing, drivers, areaRadius, devices, tz)
 		kb := pilotButtons(local)
 		if summaryMsgID != 0 {
 			editParams := &bot.EditMessageTextParams{
@@ -653,7 +388,7 @@ func (t *Tracker) sendRadarUpdates(stopCh <-chan struct{}) {
 			return lines[i].entry.Position.Altitude > lines[j].entry.Position.Altitude
 		})
 
-		summary := t.buildRadarSummary(lines, center, radius, tz)
+		summary := buildRadarSummary(lines, center, radius, tz)
 		kb := radarButtons(lines)
 		ctx := context.Background()
 
@@ -691,71 +426,3 @@ func (t *Tracker) sendRadarUpdates(stopCh <-chan struct{}) {
 	}
 }
 
-type radarLine struct {
-	id    string
-	entry RadarEntry
-}
-
-func (t *Tracker) buildRadarSummary(lines []radarLine, center *Coordinates, radius int, tz *time.Location) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "📡 Радар: %d ВС в зоне %dкм\n", len(lines), radius)
-
-	for _, l := range lines {
-		pos := l.entry.Position
-		if pos == nil {
-			continue
-		}
-		sb.WriteString("\n")
-		sb.WriteString(l.id)
-		if name, ok := aircraftTypes[l.entry.AircraftType]; ok && l.entry.AircraftType > 0 {
-			sb.WriteString(" [")
-			sb.WriteString(name)
-			sb.WriteString("]")
-		}
-		if l.entry.DDBInfo != "" {
-			sb.WriteString(" — ")
-			sb.WriteString(l.entry.DDBInfo)
-		}
-		dist, _ := distanceAndBearing(center.Latitude, center.Longitude, pos.Latitude, pos.Longitude)
-		fmt.Fprintf(&sb, "\n  %.0fм ↕ | %.0fкм/ч | %.1fкм | %s",
-			pos.Altitude, pos.GroundSpeed, dist,
-			l.entry.LastSeen.In(tz).Format("15:04:05"))
-		fmt.Fprintf(&sb, "\n  📍 %.4f, %.4f", pos.Latitude, pos.Longitude)
-
-		// Truncate to fit Telegram message limit.
-		if sb.Len() > 3900 {
-			fmt.Fprintf(&sb, "\n\n…и ещё ВС")
-			break
-		}
-	}
-
-	if len(lines) == 0 {
-		sb.WriteString("\nНет ВС в зоне")
-	}
-	return sb.String()
-}
-
-// radarButtons builds inline keyboard with map links for radar entries.
-func radarButtons(lines []radarLine) *models.InlineKeyboardMarkup {
-	var rows [][]models.InlineKeyboardButton
-	for _, l := range lines {
-		if l.entry.Position == nil {
-			continue
-		}
-		label := l.id
-		if name, ok := aircraftTypes[l.entry.AircraftType]; ok && l.entry.AircraftType > 0 {
-			label += " " + name
-		}
-		url := mapsNavURL(l.entry.Position.Latitude, l.entry.Position.Longitude)
-		rows = append(rows, []models.InlineKeyboardButton{
-			{Text: "🗺 " + label, URL: url},
-		})
-		if len(rows) >= 20 {
-			break
-		}
-	}
-	if len(rows) == 0 {
-		return nil
-	}
-	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
-}

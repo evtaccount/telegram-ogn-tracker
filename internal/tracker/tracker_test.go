@@ -3,8 +3,10 @@ package tracker
 import (
 	"math"
 	"testing"
+	"time"
 
 	"ogn/ddb"
+	"ogn/parser"
 )
 
 func TestShortID(t *testing.T) {
@@ -106,6 +108,83 @@ func TestNearestDriver(t *testing.T) {
 	if _, _, found := nearestDriver(50, 30, []*Coordinates{}); found {
 		t.Error("zero drivers: expected found=false")
 	}
+}
+
+func TestUpdateLandingState(t *testing.T) {
+	t0 := time.Now()
+	flying := func() *TrackInfo { return &TrackInfo{Status: StatusFlying} }
+	moving := &parser.PositionMessage{GroundSpeed: 30, ClimbRate: 0.0}
+	stopped := &parser.PositionMessage{GroundSpeed: 1, ClimbRate: 0.1}
+	thermalling := &parser.PositionMessage{GroundSpeed: 1, ClimbRate: 1.5}
+
+	t.Run("flying with motion stays flying", func(t *testing.T) {
+		info := flying()
+		if updateLandingState(info, moving, t0) {
+			t.Fatal("expected no transition")
+		}
+		if info.Status != StatusFlying {
+			t.Errorf("status: got %v", info.Status)
+		}
+	})
+
+	t.Run("low speed but climbing resets timer", func(t *testing.T) {
+		info := flying()
+		info.LowSpeedSince = t0.Add(-2 * time.Minute) // pretend we were stopped
+		if updateLandingState(info, thermalling, t0) {
+			t.Fatal("thermalling pilot must not be marked landed")
+		}
+		if !info.LowSpeedSince.IsZero() {
+			t.Errorf("LowSpeedSince should reset, got %v", info.LowSpeedSince)
+		}
+	})
+
+	t.Run("first stationary frame starts timer, no transition", func(t *testing.T) {
+		info := flying()
+		if updateLandingState(info, stopped, t0) {
+			t.Fatal("first stationary frame must not transition yet")
+		}
+		if info.LowSpeedSince != t0 {
+			t.Errorf("LowSpeedSince: got %v want %v", info.LowSpeedSince, t0)
+		}
+	})
+
+	t.Run("stationary for less than confirm window — no transition", func(t *testing.T) {
+		info := flying()
+		info.LowSpeedSince = t0.Add(-30 * time.Second)
+		if updateLandingState(info, stopped, t0) {
+			t.Fatal("30s is below the 90s confirm window")
+		}
+	})
+
+	t.Run("stationary past confirm window — landed", func(t *testing.T) {
+		info := flying()
+		info.LowSpeedSince = t0.Add(-2 * time.Minute)
+		if !updateLandingState(info, stopped, t0) {
+			t.Fatal("expected transition to landed")
+		}
+		if info.Status != StatusLanded {
+			t.Errorf("status: got %v want StatusLanded", info.Status)
+		}
+		if info.LandingTime != t0 {
+			t.Errorf("LandingTime: got %v want %v", info.LandingTime, t0)
+		}
+	})
+
+	t.Run("already landed — no-op", func(t *testing.T) {
+		info := &TrackInfo{Status: StatusLanded, LandingTime: t0.Add(-time.Minute)}
+		if updateLandingState(info, stopped, t0) {
+			t.Fatal("must not re-transition")
+		}
+	})
+
+	t.Run("nil inputs are safe", func(t *testing.T) {
+		if updateLandingState(nil, stopped, t0) {
+			t.Error("nil info: expected false")
+		}
+		if updateLandingState(flying(), nil, t0) {
+			t.Error("nil msg: expected false")
+		}
+	})
 }
 
 func TestFormatDDBInfo(t *testing.T) {
