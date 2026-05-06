@@ -36,12 +36,27 @@ func deleteCallbackMessage(ctx context.Context, b *bot.Bot, cq *models.CallbackQ
 	}
 }
 
-// handleCallback is the common wrapper for callback handlers:
-// answer the query, check trust, resolve session chatID, and call fn.
-func (t *Tracker) handleCallback(ctx context.Context, b *bot.Bot, update *models.Update, fn func(int64)) {
-	cq := update.CallbackQuery
+// callbackChatAllowed answers the query, checks trust, and verifies the source
+// chat is in the allow-list. Returns the source chatID or 0 if denied.
+func (t *Tracker) callbackChatAllowed(ctx context.Context, b *bot.Bot, cq *models.CallbackQuery) int64 {
 	t.answerCallback(ctx, b, cq)
 	if !t.isTrusted(cq.From.ID) {
+		return 0
+	}
+	if cq.Message.Message == nil {
+		return 0
+	}
+	chatID := cq.Message.Message.Chat.ID
+	if !t.isAllowedChat(chatID) {
+		return 0
+	}
+	return chatID
+}
+
+// handleCallback is the common wrapper for callback handlers:
+// answer the query, check trust + allow-list, resolve session chatID, and call fn.
+func (t *Tracker) handleCallback(ctx context.Context, b *bot.Bot, update *models.Update, fn func(int64)) {
+	if t.callbackChatAllowed(ctx, b, update.CallbackQuery) == 0 {
 		return
 	}
 	t.mu.Lock()
@@ -55,8 +70,7 @@ func (t *Tracker) handleCallback(ctx context.Context, b *bot.Bot, update *models
 // handleCallbackWithDelete is like handleCallback but also deletes the prompt message.
 func (t *Tracker) handleCallbackWithDelete(ctx context.Context, b *bot.Bot, update *models.Update, fn func(int64)) {
 	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
-	if !t.isTrusted(cq.From.ID) {
+	if t.callbackChatAllowed(ctx, b, cq) == 0 {
 		return
 	}
 	deleteCallbackMessage(ctx, b, cq)
@@ -94,8 +108,7 @@ func (t *Tracker) cbLanding(ctx context.Context, b *bot.Bot, update *models.Upda
 
 func (t *Tracker) cbDriver(ctx context.Context, b *bot.Bot, update *models.Update) {
 	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
-	if !t.isTrusted(cq.From.ID) {
+	if t.callbackChatAllowed(ctx, b, cq) == 0 {
 		return
 	}
 	t.mu.Lock()
@@ -108,8 +121,7 @@ func (t *Tracker) cbDriver(ctx context.Context, b *bot.Bot, update *models.Updat
 
 func (t *Tracker) cbDriverOff(ctx context.Context, b *bot.Bot, update *models.Update) {
 	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
-	if !t.isTrusted(cq.From.ID) {
+	if t.callbackChatAllowed(ctx, b, cq) == 0 {
 		return
 	}
 	t.mu.Lock()
@@ -122,8 +134,7 @@ func (t *Tracker) cbDriverOff(ctx context.Context, b *bot.Bot, update *models.Up
 
 func (t *Tracker) cbArea(ctx context.Context, b *bot.Bot, update *models.Update) {
 	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
-	if !t.isTrusted(cq.From.ID) {
+	if t.callbackChatAllowed(ctx, b, cq) == 0 {
 		return
 	}
 	t.mu.Lock()
@@ -188,8 +199,7 @@ func (t *Tracker) cbStartResume(ctx context.Context, b *bot.Bot, update *models.
 
 func (t *Tracker) cbStartFresh(ctx context.Context, b *bot.Bot, update *models.Update) {
 	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
-	if !t.isTrusted(cq.From.ID) {
+	if t.callbackChatAllowed(ctx, b, cq) == 0 {
 		return
 	}
 	deleteCallbackMessage(ctx, b, cq)

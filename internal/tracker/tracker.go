@@ -280,6 +280,43 @@ type Tracker struct {
 	session       *GroupSession
 	users         map[int64]*UserInfo
 	resumeOnStart bool // флаг авто-возобновления трекинга после перезапуска
+	// allowedChats is a whitelist of group chat IDs allowed to use the bot.
+	// Nil means "allow all" — preserves behaviour when ALLOWED_CHATS is unset.
+	// Populated once in NewTracker and never mutated thereafter.
+	allowedChats map[int64]bool
+}
+
+// parseAllowedChats parses a comma-separated list of chat IDs from env.
+// Returns nil for empty input (meaning "allow all chats"). Invalid entries
+// are logged and skipped.
+func parseAllowedChats(env string) map[int64]bool {
+	env = strings.TrimSpace(env)
+	if env == "" {
+		return nil
+	}
+	m := make(map[int64]bool)
+	for _, part := range strings.Split(env, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil {
+			log.Printf("ALLOWED_CHATS: ignoring invalid entry %q: %v", part, err)
+			continue
+		}
+		m[id] = true
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+// isAllowedChat returns true if the chat may use the bot.
+// When the allow-list is unset (nil), every chat is allowed.
+func (t *Tracker) isAllowedChat(chatID int64) bool {
+	return t.allowedChats == nil || t.allowedChats[chatID]
 }
 
 // formatDDBInfo returns a human-readable summary of the OGN DDB entry for a device,
@@ -465,11 +502,21 @@ func (t *Tracker) loadDevices() {
 // goroutine could read it — no further writes, no race.
 func NewTracker(b *bot.Bot) *Tracker {
 	t := &Tracker{
-		bot:   b,
-		aprs:  client.New("N0CALL", ""),
-		users: make(map[int64]*UserInfo),
+		bot:          b,
+		aprs:         client.New("N0CALL", ""),
+		users:        make(map[int64]*UserInfo),
+		allowedChats: parseAllowedChats(os.Getenv("ALLOWED_CHATS")),
 	}
 	t.aprs.Logger = log.Default()
+	if t.allowedChats != nil {
+		ids := make([]string, 0, len(t.allowedChats))
+		for id := range t.allowedChats {
+			ids = append(ids, strconv.FormatInt(id, 10))
+		}
+		log.Printf("[acl] ALLOWED_CHATS active: %s", strings.Join(ids, ","))
+	} else {
+		log.Printf("[acl] ALLOWED_CHATS not set; all chats allowed")
+	}
 
 	if me, err := b.GetMe(context.Background()); err == nil {
 		t.botUsername = me.Username
@@ -553,6 +600,10 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 
 	// Auto-resume tracking if it was active before restart.
 	if t.resumeOnStart && t.session != nil {
+		if !t.isAllowedChat(t.session.ChatID) {
+			log.Printf("[acl] not auto-resuming tracking: chat %d is not in ALLOWED_CHATS", t.session.ChatID)
+			return
+		}
 		t.mu.Lock()
 		t.session.TrackingOn = true
 		t.session.StopCh = make(chan struct{})
@@ -572,6 +623,10 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 	// Handle pickup callback queries (dynamic IDs, can't use exact match).
 	if update.CallbackQuery != nil {
 		cq := update.CallbackQuery
+		if cq.Message.Message != nil && !t.isAllowedChat(cq.Message.Message.Chat.ID) {
+			t.answerCallback(ctx, b, cq)
+			return
+		}
 		if strings.HasPrefix(cq.Data, "pickup:") {
 			t.answerCallback(ctx, b, cq)
 			if !t.isTrusted(cq.From.ID) {
@@ -586,6 +641,9 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 
 	// Handle driver live location updates (edited messages).
 	if update.EditedMessage != nil && update.EditedMessage.Location != nil {
+		if !t.isAllowedChat(update.EditedMessage.Chat.ID) {
+			return
+		}
 		t.mu.Lock()
 		if t.session != nil {
 			for _, d := range t.session.Drivers {
@@ -607,6 +665,13 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 	}
 	m := update.Message
 	if !t.isTrusted(m.From.ID) {
+		return
+	}
+
+	// Drop any group-chat update that is not in the allow-list. DMs are
+	// unaffected — they need to remain reachable so deep-link /add works.
+	if isGroupChat(m.Chat) && !t.isAllowedChat(m.Chat.ID) {
+		log.Printf("[acl] dropping group update from non-allowed chat %d (user=%d)", m.Chat.ID, m.From.ID)
 		return
 	}
 
