@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -14,267 +13,10 @@ import (
 
 	"ogn/client"
 	"ogn/ddb"
-	"ogn/parser"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 )
-
-// PilotStatus represents the current state of a tracked pilot.
-type PilotStatus int
-
-const (
-	StatusFlying PilotStatus = iota
-	StatusLanded
-	StatusPickedUp
-)
-
-// TrackInfo holds tracking state for a single pilot/aircraft.
-type TrackInfo struct {
-	MessageID        int                     // Telegram message ID for the live-location pin
-	Position         *parser.PositionMessage // last position received from OGN
-	Name             string
-	Username         string
-	LastUpdate       time.Time
-	Status           PilotStatus
-	LandingTime      time.Time
-	LandingConfirmed bool      // true if pilot confirmed landing via DM button
-	LowSpeedSince    time.Time // start of the low-speed window used for landing detection
-	AutoDiscovered   bool      // discovered automatically via the area-tracking zone
-	OwnerUserID      int64     // Telegram user ID of the tracker's owner
-	// LastHeading caches the most recent non-zero course in degrees so the
-	// live-location arrow does not jump back to north when OGN reports
-	// Course=0 with non-zero speed (a known limitation of the data feed).
-	// Runtime-only; not persisted.
-	LastHeading int
-}
-
-// StatusEmoji returns an emoji reflecting the pilot's current state.
-// Confirmed landings get ✅, auto-detected (unconfirmed) get 🪂.
-func (ti *TrackInfo) StatusEmoji() string {
-	switch ti.Status {
-	case StatusLanded:
-		if ti.LandingConfirmed {
-			return "✅"
-		}
-		return "🪂"
-	case StatusPickedUp:
-		return "✅"
-	default:
-		return "✈️"
-	}
-}
-
-func (ti *TrackInfo) DisplayName() string {
-	if ti.Name != "" {
-		return ti.Name
-	}
-	return ti.Username
-}
-
-// RadarEntry holds a single aircraft observation during radar mode.
-type RadarEntry struct {
-	Position     *parser.PositionMessage
-	LastSeen     time.Time
-	AircraftType int
-	DDBInfo      string
-}
-
-// Coordinates represents a geographic point (WGS84).
-type Coordinates struct {
-	Latitude  float64
-	Longitude float64
-}
-
-// DriverInfo holds state for a driver who can pick up landed pilots.
-type DriverInfo struct {
-	Pos     *Coordinates
-	MsgID   int       // Telegram message ID for the driver's live-location pin
-	Waiting bool      // true while waiting for the driver to send a live location
-	Expiry  time.Time // deadline for sending the location
-	WaitGen int       // wait generation — used to cancel stale timers
-}
-
-// GroupSession holds all session-specific state for a single chat.
-type GroupSession struct {
-	ChatID          int64
-	Tracking        map[string]*TrackInfo
-	TrackingOn      bool
-	Landing         *Coordinates
-	TrackArea       *Coordinates
-	TrackAreaRadius int
-	Timezone        *time.Location
-	Drivers         map[int64]*DriverInfo
-	SummaryMsgID    int
-	// Runtime (not persisted):
-	StopCh         chan struct{}
-	WaitingLanding bool
-	LandingExpiry  time.Time
-	// DM landing flow uses a per-user flag so a stray location pin from
-	// another DM user can't satisfy a different user's pending request.
-	WaitingDMLandingFor int64
-	DMLandingExpiry     time.Time
-	WaitingArea         bool
-	AreaExpiry          time.Time
-	// Radar mode (runtime only):
-	RadarOn            bool
-	RadarRadius        int // radar-specific radius (may differ from TrackAreaRadius)
-	RadarEntries       map[string]*RadarEntry
-	RadarMsgID         int
-	RadarStopCh        chan struct{}
-	WaitingRadarRadius bool
-	RadarRadiusExpiry  time.Time
-}
-
-// tz returns the session's timezone, defaulting to UTC.
-func (s *GroupSession) tz() *time.Location {
-	if s != nil && s.Timezone != nil {
-		return s.Timezone
-	}
-	return time.UTC
-}
-
-// replyKeyboard returns an inline keyboard based on current session state.
-// Must be called with t.mu held.
-func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
-	if s == nil {
-		return nil
-	}
-	hasContent := len(s.Tracking) > 0 || s.TrackArea != nil
-
-	if s.RadarOn {
-		return &models.ReplyKeyboardMarkup{
-			Keyboard: [][]models.KeyboardButton{
-				{
-					{Text: "⏹ Радар стоп"},
-					{Text: "📡 Радиус"},
-				},
-			},
-			ResizeKeyboard: true,
-		}
-	}
-
-	if s.TrackingOn {
-		areaText := "📡 Зона"
-		if s.TrackArea != nil {
-			areaText = "📡 Зона ✕"
-		}
-		return &models.ReplyKeyboardMarkup{
-			Keyboard: [][]models.KeyboardButton{
-				{
-					{Text: "⏹ Стоп"},
-					{Text: "📋 Список"},
-				},
-				{
-					{Text: areaText},
-					{Text: "🚗 Водитель"},
-				},
-			},
-			ResizeKeyboard: true,
-		}
-	}
-	var rows [][]models.KeyboardButton
-	if hasContent {
-		row1 := []models.KeyboardButton{
-			{Text: "▶️ Старт"},
-			{Text: "📋 Список"},
-			{Text: "🔄 Завершить"},
-		}
-		rows = append(rows, row1)
-		if s.TrackArea != nil {
-			rows = append(rows, []models.KeyboardButton{{Text: "📡 Радар"}})
-		}
-	} else {
-		rows = append(rows, []models.KeyboardButton{
-			{Text: "➕ Добавить"},
-			{Text: "📡 Зона"},
-			{Text: "🔄 Завершить"},
-		})
-	}
-	return &models.ReplyKeyboardMarkup{
-		Keyboard:       rows,
-		ResizeKeyboard: true,
-	}
-}
-
-// dmReplyKeyboard returns a reply keyboard for private chat.
-// Shows "📍 Посадка" only if the user is actively tracked and flying.
-// Must be called with t.mu held.
-func (t *Tracker) dmReplyKeyboard(userID int64) *models.ReplyKeyboardMarkup {
-	u, ok := t.users[userID]
-	if !ok || u.OGNID == "" {
-		return nil
-	}
-	s := t.session
-	if s == nil || !s.TrackingOn {
-		return nil
-	}
-	info, ok := s.Tracking[u.OGNID]
-	if !ok || info.Status != StatusFlying {
-		return nil
-	}
-	return &models.ReplyKeyboardMarkup{
-		Keyboard: [][]models.KeyboardButton{
-			{{Text: "🪂 Сел"}, {Text: "📍 Посадка"}},
-		},
-		ResizeKeyboard: true,
-	}
-}
-
-// stopTrackingAsync flips tracking off and disconnects the APRS client in a
-// detached goroutine. The async hand-off prevents a deadlock: the APRS callback
-// inside Run() acquires t.mu, so calling Disconnect() while holding t.mu would
-// wedge if Disconnect ever waited for the callback to return.
-// Caller must hold t.mu.
-func (t *Tracker) stopTrackingAsync() {
-	s := t.session
-	if s == nil || !s.TrackingOn {
-		return
-	}
-	s.TrackingOn = false
-	s.SummaryMsgID = 0
-	stopCh := s.StopCh
-	s.StopCh = nil
-	aprs := t.aprs
-	go func() {
-		if stopCh != nil {
-			close(stopCh)
-		}
-		_ = aprs.Disconnect()
-	}()
-}
-
-// stopRadarAsync flips radar off and disconnects the APRS client asynchronously.
-// See stopTrackingAsync for rationale. Caller must hold t.mu.
-func (t *Tracker) stopRadarAsync() {
-	s := t.session
-	if s == nil || !s.RadarOn {
-		return
-	}
-	s.RadarOn = false
-	s.RadarMsgID = 0
-	s.RadarEntries = nil
-	s.WaitingRadarRadius = false
-	stopCh := s.RadarStopCh
-	s.RadarStopCh = nil
-	aprs := t.aprs
-	go func() {
-		if stopCh != nil {
-			close(stopCh)
-		}
-		_ = aprs.Disconnect()
-	}()
-}
-
-// UserInfo represents a known user across sessions.
-type UserInfo struct {
-	UserID       int64
-	Username     string
-	OGNID        string
-	DisplayName  string
-	DMChatID     int64
-	PendingGroup int64
-}
 
 // Tracker is the central controller that bridges Telegram bot and OGN APRS feed.
 // It manages a single group session, user registry, and APRS client lifecycle.
@@ -332,101 +74,6 @@ func (t *Tracker) isAllowedChat(chatID int64) bool {
 	return t.allowedChats == nil || t.allowedChats[chatID]
 }
 
-// formatDDBInfo returns a human-readable summary of the OGN DDB entry for a device,
-// e.g. "ASG 29 | D-1234 | CN:AB". Returns "" if unknown.
-func formatDDBInfo(devices map[string]ddb.Device, id string) string {
-	if devices == nil {
-		return ""
-	}
-	dev, ok := devices[id]
-	if !ok {
-		return ""
-	}
-	var parts []string
-	if dev.AircraftModel != "" {
-		parts = append(parts, dev.AircraftModel)
-	}
-	if dev.Registration != "" {
-		parts = append(parts, dev.Registration)
-	}
-	if dev.CN != "" {
-		parts = append(parts, "CN:"+dev.CN)
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.Join(parts, " | ")
-}
-
-// aircraftTypes maps OGN aircraft type codes to human-readable names.
-var aircraftTypes = map[int]string{
-	0: "Unknown", 1: "Glider", 2: "Tow plane", 3: "Helicopter",
-	4: "Parachute", 5: "Drop plane", 6: "Hang glider", 7: "Paraglider",
-	8: "Powered aircraft", 9: "Jet", 10: "UFO", 11: "Balloon",
-	12: "Airship", 13: "Drone", 15: "Static object",
-}
-
-// shortID normalizes an OGN address to its last 6 hex characters.
-// OGN APRS uses full callsigns like "FLR123ABC", but for matching
-// we only need the 6-char device address suffix.
-func shortID(id string) string {
-	id = strings.ToUpper(strings.TrimSpace(id))
-	if len(id) <= 6 {
-		return id
-	}
-	return id[len(id)-6:]
-}
-
-// isValidShortID reports whether s is exactly 6 uppercase hex characters,
-// which is the canonical form of an OGN device address. Used at user-input
-// boundaries (commands, DM messages) so non-hex garbage never reaches the
-// APRS budlist filter.
-func isValidShortID(s string) bool {
-	if len(s) != 6 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= '0' && c <= '9':
-		case c >= 'A' && c <= 'F':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// isMessageNotModified detects the harmless Telegram error returned when an
-// edit would not change the message contents. The library does not expose a
-// typed error, so we match on the substring; centralised here so a future
-// SDK change only needs one fix.
-func isMessageNotModified(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "message is not modified")
-}
-
-// distanceAndBearing computes distance (km) and bearing between two points
-// using CheapRuler for fast approximate calculations at paragliding distances.
-func distanceAndBearing(lat1, lon1, lat2, lon2 float64) (distKm float64, bearing float64) {
-	ruler := parser.NewCheapRuler((lat1 + lat2) / 2)
-	a := [2]float64{lon1, lat1}
-	b := [2]float64{lon2, lat2}
-	return ruler.Distance(a, b) / 1000, ruler.Bearing(a, b)
-}
-
-// bearingName converts a bearing in degrees to a cardinal direction (N, NE, E, ...).
-func bearingName(deg float64) string {
-	deg = math.Mod(deg+360, 360)
-	names := []string{"N", "NE", "E", "SE", "S", "SW", "W", "NW"}
-	idx := int(math.Round(deg/45)) % 8
-	return names[idx]
-}
-
-func formatBearing(deg float64) string {
-	deg = math.Mod(deg+360, 360)
-	return fmt.Sprintf("(%.0f° | %s)", deg, bearingName(deg))
-}
-
 // tz returns the session timezone, defaulting to UTC.
 // Must be called with t.mu held.
 func (t *Tracker) tz() *time.Location {
@@ -436,106 +83,28 @@ func (t *Tracker) tz() *time.Location {
 	return time.UTC
 }
 
-func isGroupChat(chat models.Chat) bool {
-	return chat.Type == "group" || chat.Type == "supergroup"
-}
-
-func isPrivateChat(chat models.Chat) bool {
-	return chat.Type == "private"
-}
-
-func mapsNavURL(lat, lon float64) string {
-	return fmt.Sprintf("https://www.google.com/maps/dir/?api=1&destination=%.6f,%.6f", lat, lon)
-}
-
-// ognPrefixes are the standard OGN APRS callsign prefixes.
-// Short 6-char IDs are expanded to all three variants for the budlist filter.
-var ognPrefixes = []string{"FLR", "OGN", "ICA", "NAV", "FNT"}
-
-// updateFilter rebuilds the APRS filter based on tracked IDs and area.
-// Caller must hold t.mu.
-func (t *Tracker) updateFilter() {
-	if t.session == nil {
-		return
+// dmReplyKeyboard returns a reply keyboard for private chat.
+// Shows "📍 Посадка" only if the user is actively tracked and flying.
+// Must be called with t.mu held.
+func (t *Tracker) dmReplyKeyboard(userID int64) *models.ReplyKeyboardMarkup {
+	u, ok := t.users[userID]
+	if !ok || u.OGNID == "" {
+		return nil
 	}
 	s := t.session
-	var filters []string
-
-	// Budlist for explicitly added IDs.
-	// APRS budlist requires full callsigns (e.g. FLRFD0E8D).
-	// Short 6-char IDs are expanded with all known OGN prefixes.
-	var callsigns []string
-	for id, info := range s.Tracking {
-		if info.AutoDiscovered {
-			continue
-		}
-		if len(id) <= 6 {
-			for _, prefix := range ognPrefixes {
-				callsigns = append(callsigns, prefix+id)
-			}
-		} else {
-			callsigns = append(callsigns, id)
-		}
+	if s == nil || !s.TrackingOn {
+		return nil
 	}
-	if len(callsigns) > 0 {
-		filters = append(filters, client.BudlistFilter(callsigns...))
+	info, ok := s.Tracking[u.OGNID]
+	if !ok || info.Status != StatusFlying {
+		return nil
 	}
-
-	// Range filter for area tracking.
-	if s.TrackArea != nil {
-		filters = append(filters, client.RangeFilter(s.TrackArea.Latitude, s.TrackArea.Longitude, s.TrackAreaRadius))
+	return &models.ReplyKeyboardMarkup{
+		Keyboard: [][]models.KeyboardButton{
+			{{Text: "🪂 Сел"}, {Text: "📍 Посадка"}},
+		},
+		ResizeKeyboard: true,
 	}
-
-	var filter string
-	if len(filters) > 0 {
-		filter = client.CombineFilters(filters...)
-	}
-
-	// Collect tracked IDs (excluding auto-discovered) for diagnostic logs.
-	trackedIDs := make([]string, 0, len(s.Tracking))
-	for id, info := range s.Tracking {
-		if !info.AutoDiscovered {
-			trackedIDs = append(trackedIDs, id)
-		}
-	}
-
-	if !s.TrackingOn {
-		// No goroutines using the client — just patch the filter for next start.
-		t.aprs.Filter = filter
-		slog.Info("aprs filter updated (idle)",
-			"filter", filter,
-			"tracked_ids", trackedIDs,
-			"callsigns", callsigns,
-			"area", s.TrackArea != nil)
-		return
-	}
-
-	// Restart client goroutines with a fresh client.
-	// Disconnect() permanently kills the client (killed=true), so we must create
-	// a new instance. The shutdown of the old client is dispatched to a goroutine
-	// to avoid holding t.mu across Disconnect — the APRS callback also takes t.mu.
-	oldStopCh := s.StopCh
-	oldAprs := t.aprs
-	newAprs := client.New("N0CALL", filter)
-	newAprs.Logger = log.Default()
-	t.aprs = newAprs
-	newStopCh := make(chan struct{})
-	s.StopCh = newStopCh
-
-	slog.Info("aprs filter restarting",
-		"filter", filter,
-		"tracked_ids", trackedIDs,
-		"callsigns", callsigns,
-		"area", s.TrackArea != nil)
-
-	go func() {
-		if oldStopCh != nil {
-			close(oldStopCh)
-		}
-		_ = oldAprs.Disconnect()
-	}()
-	go t.runClient(newStopCh, newAprs)
-	go t.sendUpdates(newStopCh)
 }
 
 // loadDevices fetches the OGN DDB (device database) in the background.
@@ -980,12 +549,4 @@ func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Messag
 	}); err != nil {
 		slog.Error("failed to confirm add in group", "err", err)
 	}
-}
-
-// commandArgs extracts the argument string after the first space in a command.
-func commandArgs(text string) string {
-	if i := strings.Index(text, " "); i != -1 {
-		return strings.TrimSpace(text[i+1:])
-	}
-	return ""
 }

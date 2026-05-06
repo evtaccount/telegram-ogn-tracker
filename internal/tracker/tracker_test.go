@@ -431,3 +431,136 @@ func TestStaleLowSpeedReset(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildFilter(t *testing.T) {
+	t.Run("nil session", func(t *testing.T) {
+		filter, callsigns, ids := buildFilter(nil)
+		if filter != "" || callsigns != nil || ids != nil {
+			t.Errorf("nil session: expected empty, got filter=%q callsigns=%v ids=%v", filter, callsigns, ids)
+		}
+	})
+
+	t.Run("empty session", func(t *testing.T) {
+		s := &GroupSession{Tracking: map[string]*TrackInfo{}}
+		filter, callsigns, ids := buildFilter(s)
+		if filter != "" {
+			t.Errorf("expected empty filter, got %q", filter)
+		}
+		if len(callsigns) != 0 {
+			t.Errorf("expected no callsigns, got %v", callsigns)
+		}
+		if len(ids) != 0 {
+			t.Errorf("expected no tracked ids, got %v", ids)
+		}
+	})
+
+	t.Run("single short id expands across all OGN prefixes", func(t *testing.T) {
+		s := &GroupSession{Tracking: map[string]*TrackInfo{
+			"FE0E4A": {},
+		}}
+		filter, callsigns, ids := buildFilter(s)
+		if !strings.Contains(filter, "b/") {
+			t.Errorf("expected budlist filter prefix, got %q", filter)
+		}
+		// 5 prefixes × 1 id = 5 callsigns
+		if len(callsigns) != len(ognPrefixes) {
+			t.Errorf("expected %d callsigns, got %d (%v)", len(ognPrefixes), len(callsigns), callsigns)
+		}
+		for _, prefix := range ognPrefixes {
+			found := false
+			for _, cs := range callsigns {
+				if cs == prefix+"FE0E4A" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected callsign %s+FE0E4A in %v", prefix, callsigns)
+			}
+		}
+		if len(ids) != 1 || ids[0] != "FE0E4A" {
+			t.Errorf("expected ids=[FE0E4A], got %v", ids)
+		}
+	})
+
+	t.Run("long callsign passes through verbatim", func(t *testing.T) {
+		s := &GroupSession{Tracking: map[string]*TrackInfo{
+			"FLRSPECIAL": {},
+		}}
+		_, callsigns, _ := buildFilter(s)
+		if len(callsigns) != 1 || callsigns[0] != "FLRSPECIAL" {
+			t.Errorf("long callsign should not be expanded: got %v", callsigns)
+		}
+	})
+
+	t.Run("auto-discovered ids excluded from filter", func(t *testing.T) {
+		s := &GroupSession{Tracking: map[string]*TrackInfo{
+			"AAAAAA": {},
+			"BBBBBB": {AutoDiscovered: true},
+		}}
+		_, callsigns, ids := buildFilter(s)
+		if len(ids) != 1 || ids[0] != "AAAAAA" {
+			t.Errorf("auto-discovered ids should be excluded, got %v", ids)
+		}
+		for _, cs := range callsigns {
+			if strings.Contains(cs, "BBBBBB") {
+				t.Errorf("auto-discovered callsign leaked into filter: %v", callsigns)
+			}
+		}
+	})
+
+	t.Run("area-only produces range filter", func(t *testing.T) {
+		s := &GroupSession{
+			Tracking:        map[string]*TrackInfo{},
+			TrackArea:       &Coordinates{Latitude: 50.0, Longitude: 30.0},
+			TrackAreaRadius: 100,
+		}
+		filter, callsigns, ids := buildFilter(s)
+		if !strings.Contains(filter, "r/") {
+			t.Errorf("expected range filter, got %q", filter)
+		}
+		if len(callsigns) != 0 || len(ids) != 0 {
+			t.Errorf("area-only: expected no budlist, got callsigns=%v ids=%v", callsigns, ids)
+		}
+	})
+
+	t.Run("budlist + area combined", func(t *testing.T) {
+		s := &GroupSession{
+			Tracking: map[string]*TrackInfo{
+				"FE0E4A": {},
+			},
+			TrackArea:       &Coordinates{Latitude: 50.0, Longitude: 30.0},
+			TrackAreaRadius: 100,
+		}
+		filter, _, _ := buildFilter(s)
+		if !strings.Contains(filter, "b/") || !strings.Contains(filter, "r/") {
+			t.Errorf("expected combined filter with both b/ and r/, got %q", filter)
+		}
+	})
+}
+
+func TestChooseHeading(t *testing.T) {
+	cases := []struct {
+		name        string
+		course      int
+		lastHeading int
+		groundSpeed float64
+		want        int
+	}{
+		{"non-zero course used directly", 87, 200, 30, 87},
+		{"course=0 stationary -> no arrow", 0, 200, 0, 0},
+		{"course=0 moving with cache -> use cache", 0, 200, 30, 200},
+		{"course=0 moving without cache -> 360 fallback", 0, 0, 30, 360},
+		{"course=0 negative speed treated as stationary", 0, 0, -1, 0},
+		{"course wins even when cache is set", 45, 200, 30, 45},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := chooseHeading(c.course, c.lastHeading, c.groundSpeed)
+			if got != c.want {
+				t.Errorf("chooseHeading(%d, %d, %g) = %d, want %d",
+					c.course, c.lastHeading, c.groundSpeed, got, c.want)
+			}
+		})
+	}
+}
