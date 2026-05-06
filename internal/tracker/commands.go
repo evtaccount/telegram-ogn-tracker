@@ -87,8 +87,8 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	}
 	// No session or empty session — create fresh.
 	if t.session != nil {
-		t.session.stopTracking(t.aprs)
-		t.session.stopRadar(t.aprs)
+		t.stopTrackingAsync()
+		t.stopRadarAsync()
 	}
 	t.session = &GroupSession{
 		ChatID:   m.Chat.ID,
@@ -770,8 +770,8 @@ func (t *Tracker) cmdDebugWipe(ctx context.Context, b *bot.Bot, update *models.U
 
 	t.mu.Lock()
 	if t.session != nil {
-		t.session.stopTracking(t.aprs)
-		t.session.stopRadar(t.aprs)
+		t.stopTrackingAsync()
+		t.stopRadarAsync()
 	}
 	t.session = nil
 	t.users = make(map[int64]*UserInfo)
@@ -1153,8 +1153,8 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 	log.Printf("[session] reset chat=%d wipePilots=%v", chatID, wipePilots)
 	t.mu.Lock()
 	if t.session != nil {
-		t.session.stopTracking(t.aprs)
-		t.session.stopRadar(t.aprs)
+		t.stopTrackingAsync()
+		t.stopRadarAsync()
 	}
 	newSession := &GroupSession{
 		ChatID:   chatID,
@@ -1251,6 +1251,7 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	s.TrackingOn = true
 	s.StopCh = make(chan struct{})
 	stopCh := s.StopCh
+	aprs := t.aprs
 	kb := s.replyKeyboard()
 	t.saveState()
 	count := len(s.Tracking)
@@ -1258,7 +1259,7 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Unlock()
 
 	log.Printf("[tracking] ON: %d pilots, area=%v, chat=%d", count, hasArea, chatID)
-	go t.runClient(stopCh)
+	go t.runClient(stopCh, aprs)
 	go t.sendUpdates(stopCh)
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -1331,7 +1332,7 @@ func (t *Tracker) execTrackOff(ctx context.Context, b *bot.Bot, chatID int64) {
 		t.mu.Unlock()
 		return
 	}
-	s.stopTracking(t.aprs)
+	t.stopTrackingAsync()
 	kb := s.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
@@ -1443,7 +1444,7 @@ func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) {
 	s := t.session
 	// Stop radar if it's running — radar requires an area.
 	if s.RadarOn {
-		s.stopRadar(t.aprs)
+		t.stopRadarAsync()
 		t.aprs = client.New("N0CALL", "")
 		t.aprs.Logger = log.Default()
 	}
@@ -1528,12 +1529,13 @@ func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64, rad
 	t.aprs.Logger = log.Default()
 	s.RadarStopCh = make(chan struct{})
 	stopCh := s.RadarStopCh
+	aprs := t.aprs
 	kb := s.replyKeyboard()
+	areaLat, areaLon := s.TrackArea.Latitude, s.TrackArea.Longitude
 	t.mu.Unlock()
 
-	log.Printf("[radar] ON: area=%.5f,%.5f r=%dkm chat=%d",
-		s.TrackArea.Latitude, s.TrackArea.Longitude, radiusKm, chatID)
-	go t.runRadarClient(stopCh)
+	log.Printf("[radar] ON: area=%.5f,%.5f r=%dkm chat=%d", areaLat, areaLon, radiusKm, chatID)
+	go t.runRadarClient(stopCh, aprs)
 	go t.sendRadarUpdates(stopCh)
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -1552,7 +1554,7 @@ func (t *Tracker) execRadarOff(ctx context.Context, b *bot.Bot, chatID int64) {
 		t.mu.Unlock()
 		return
 	}
-	s.stopRadar(t.aprs)
+	t.stopRadarAsync()
 	t.aprs = client.New("N0CALL", "")
 	t.aprs.Logger = log.Default()
 	kb := s.replyKeyboard()
@@ -1644,7 +1646,7 @@ func (t *Tracker) execRadarSetRadius(ctx context.Context, b *bot.Bot, chatID int
 		t.mu.Unlock()
 		return
 	}
-	s.stopRadar(t.aprs)
+	t.stopRadarAsync()
 
 	s.RadarOn = true
 	s.RadarRadius = radiusKm
@@ -1656,11 +1658,12 @@ func (t *Tracker) execRadarSetRadius(ctx context.Context, b *bot.Bot, chatID int
 	t.aprs.Logger = log.Default()
 	s.RadarStopCh = make(chan struct{})
 	stopCh := s.RadarStopCh
+	aprs := t.aprs
 	kb := s.replyKeyboard()
 	t.mu.Unlock()
 
 	log.Printf("[radar] radius changed to %dkm chat=%d", radiusKm, chatID)
-	go t.runRadarClient(stopCh)
+	go t.runRadarClient(stopCh, aprs)
 	go t.sendRadarUpdates(stopCh)
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -2018,8 +2021,8 @@ func (t *Tracker) cbStartFresh(ctx context.Context, b *bot.Bot, update *models.U
 	t.mu.Lock()
 	chatID := t.sessionChatID()
 	if t.session != nil {
-		t.session.stopTracking(t.aprs)
-		t.session.stopRadar(t.aprs)
+		t.stopTrackingAsync()
+		t.stopRadarAsync()
 	}
 	t.session = &GroupSession{
 		ChatID:   chatID,

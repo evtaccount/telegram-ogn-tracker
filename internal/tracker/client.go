@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+	"ogn/client"
 	"ogn/parser"
 )
 
@@ -37,7 +38,10 @@ type landingEvent struct {
 
 // runClient connects to the OGN APRS server and processes position messages
 // in an infinite reconnect loop until stopCh is closed.
-func (t *Tracker) runClient(stopCh <-chan struct{}) {
+// The aprs client is passed explicitly so the goroutine binds to the client it
+// was launched with; the Tracker.aprs field can be reassigned by other goroutines
+// without racing on this read path.
+func (t *Tracker) runClient(stopCh <-chan struct{}, aprs *client.Client) {
 	log.Println("OGN client started")
 	for {
 		select {
@@ -47,7 +51,7 @@ func (t *Tracker) runClient(stopCh <-chan struct{}) {
 		default:
 		}
 
-		err := t.aprs.Run(func(line string) {
+		err := aprs.Run(func(line string) {
 			log.Printf("[OGN line] %s", line)
 			msg, err := parser.ParsePosition(line)
 			if err != nil {
@@ -548,7 +552,8 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 
 // runRadarClient connects to OGN APRS and collects all positions in the area.
 // Unlike runClient, it does not do landing detection or modify session.Tracking.
-func (t *Tracker) runRadarClient(stopCh <-chan struct{}) {
+// See runClient for why aprs is passed explicitly.
+func (t *Tracker) runRadarClient(stopCh <-chan struct{}, aprs *client.Client) {
 	log.Println("Radar client started")
 	for {
 		select {
@@ -558,7 +563,7 @@ func (t *Tracker) runRadarClient(stopCh <-chan struct{}) {
 		default:
 		}
 
-		err := t.aprs.Run(func(line string) {
+		err := aprs.Run(func(line string) {
 			msg, err := parser.ParsePosition(line)
 			if err != nil {
 				return

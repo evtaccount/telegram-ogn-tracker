@@ -7,6 +7,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	// Embed the IANA tzdata so /tz works on minimal images (alpine without tzdata pkg).
+	_ "time/tzdata"
+
 	"github.com/go-telegram/bot"
 
 	"telegram-ogn-tracker/internal/tracker"

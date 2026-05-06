@@ -209,24 +209,33 @@ func (t *Tracker) dmReplyKeyboard(userID int64) *models.ReplyKeyboardMarkup {
 	}
 }
 
-// stopTracking disables tracking and signals goroutines to exit.
-// Must be called with t.mu held. Requires aprs client to disconnect.
-func (s *GroupSession) stopTracking(aprs *client.Client) {
+// stopTrackingAsync flips tracking off and disconnects the APRS client in a
+// detached goroutine. The async hand-off prevents a deadlock: the APRS callback
+// inside Run() acquires t.mu, so calling Disconnect() while holding t.mu would
+// wedge if Disconnect ever waited for the callback to return.
+// Caller must hold t.mu.
+func (t *Tracker) stopTrackingAsync() {
+	s := t.session
 	if s == nil || !s.TrackingOn {
 		return
 	}
 	s.TrackingOn = false
 	s.SummaryMsgID = 0
-	if s.StopCh != nil {
-		close(s.StopCh)
-		s.StopCh = nil
-	}
-	aprs.Disconnect()
+	stopCh := s.StopCh
+	s.StopCh = nil
+	aprs := t.aprs
+	go func() {
+		if stopCh != nil {
+			close(stopCh)
+		}
+		aprs.Disconnect()
+	}()
 }
 
-// stopRadar disables radar mode and signals goroutines to exit.
-// Must be called with t.mu held. Requires aprs client to disconnect.
-func (s *GroupSession) stopRadar(aprs *client.Client) {
+// stopRadarAsync flips radar off and disconnects the APRS client asynchronously.
+// See stopTrackingAsync for rationale. Caller must hold t.mu.
+func (t *Tracker) stopRadarAsync() {
+	s := t.session
 	if s == nil || !s.RadarOn {
 		return
 	}
@@ -234,11 +243,15 @@ func (s *GroupSession) stopRadar(aprs *client.Client) {
 	s.RadarMsgID = 0
 	s.RadarEntries = nil
 	s.WaitingRadarRadius = false
-	if s.RadarStopCh != nil {
-		close(s.RadarStopCh)
-		s.RadarStopCh = nil
-	}
-	aprs.Disconnect()
+	stopCh := s.RadarStopCh
+	s.RadarStopCh = nil
+	aprs := t.aprs
+	go func() {
+		if stopCh != nil {
+			close(stopCh)
+		}
+		aprs.Disconnect()
+	}()
 }
 
 // UserInfo represents a known user across sessions.
@@ -357,6 +370,7 @@ func mapsNavURL(lat, lon float64) string {
 var ognPrefixes = []string{"FLR", "OGN", "ICA", "NAV", "FNT"}
 
 // updateFilter rebuilds the APRS filter based on tracked IDs and area.
+// Caller must hold t.mu.
 func (t *Tracker) updateFilter() {
 	if t.session == nil {
 		return
@@ -389,26 +403,40 @@ func (t *Tracker) updateFilter() {
 		filters = append(filters, client.RangeFilter(s.TrackArea.Latitude, s.TrackArea.Longitude, s.TrackAreaRadius))
 	}
 
+	var filter string
 	if len(filters) > 0 {
-		t.aprs.Filter = client.CombineFilters(filters...)
-	} else {
-		t.aprs.Filter = ""
+		filter = client.CombineFilters(filters...)
 	}
-	log.Printf("[filter] updated: %q (ids=%d, area=%v)", t.aprs.Filter, len(callsigns), s.TrackArea != nil)
-	if s.TrackingOn {
-		// Restart client goroutines to pick up the new filter.
-		// Disconnect() permanently kills the client (killed=true),
-		// so we must create a fresh client instance.
-		if s.StopCh != nil {
-			close(s.StopCh)
+
+	if !s.TrackingOn {
+		// No goroutines using the client — just patch the filter for next start.
+		t.aprs.Filter = filter
+		log.Printf("[filter] updated (idle): %q (ids=%d, area=%v)", filter, len(callsigns), s.TrackArea != nil)
+		return
+	}
+
+	// Restart client goroutines with a fresh client.
+	// Disconnect() permanently kills the client (killed=true), so we must create
+	// a new instance. The shutdown of the old client is dispatched to a goroutine
+	// to avoid holding t.mu across Disconnect — the APRS callback also takes t.mu.
+	oldStopCh := s.StopCh
+	oldAprs := t.aprs
+	newAprs := client.New("N0CALL", filter)
+	newAprs.Logger = log.Default()
+	t.aprs = newAprs
+	newStopCh := make(chan struct{})
+	s.StopCh = newStopCh
+
+	log.Printf("[filter] restarting: %q (ids=%d, area=%v)", filter, len(callsigns), s.TrackArea != nil)
+
+	go func() {
+		if oldStopCh != nil {
+			close(oldStopCh)
 		}
-		t.aprs.Disconnect()
-		t.aprs = client.New("N0CALL", t.aprs.Filter)
-		t.aprs.Logger = log.Default()
-		s.StopCh = make(chan struct{})
-		go t.runClient(s.StopCh)
-		go t.sendUpdates(s.StopCh)
-	}
+		oldAprs.Disconnect()
+	}()
+	go t.runClient(newStopCh, newAprs)
+	go t.sendUpdates(newStopCh)
 }
 
 // loadDevices fetches the OGN DDB (device database) in the background.
@@ -520,8 +548,9 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 		t.session.TrackingOn = true
 		t.session.StopCh = make(chan struct{})
 		stopCh := t.session.StopCh
+		aprs := t.aprs
 		t.mu.Unlock()
-		go t.runClient(stopCh)
+		go t.runClient(stopCh, aprs)
 		go t.sendUpdates(stopCh)
 		log.Println("auto-resumed tracking from saved session")
 	}
