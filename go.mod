@@ -1,6 +1,6 @@
 module telegram-ogn-tracker
 
-go 1.23.8
+go 1.23.10
 
 require ogn v0.0.0-20260403175026-28a204821426
 

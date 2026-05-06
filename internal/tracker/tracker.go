@@ -29,17 +29,17 @@ const (
 
 // TrackInfo holds tracking state for a single pilot/aircraft.
 type TrackInfo struct {
-	MessageID      int                     // Telegram message ID для live-локации на карте
-	Position       *parser.PositionMessage // последняя полученная позиция из OGN
+	MessageID      int                     // Telegram message ID for the live-location pin
+	Position       *parser.PositionMessage // last position received from OGN
 	Name           string
 	Username       string
 	LastUpdate     time.Time
 	Status         PilotStatus
 	LandingTime    time.Time
 	LandingConfirmed bool      // true if pilot confirmed landing via DM button
-	LowSpeedSince    time.Time // начало периода низкой скорости для детекции посадки
-	AutoDiscovered   bool      // обнаружен автоматически через зону отслеживания
-	OwnerUserID      int64     // Telegram user ID владельца трекера
+	LowSpeedSince    time.Time // start of the low-speed window used for landing detection
+	AutoDiscovered   bool      // discovered automatically via the area-tracking zone
+	OwnerUserID      int64     // Telegram user ID of the tracker's owner
 }
 
 // StatusEmoji returns an emoji reflecting the pilot's current state.
@@ -82,10 +82,10 @@ type Coordinates struct {
 // DriverInfo holds state for a driver who can pick up landed pilots.
 type DriverInfo struct {
 	Pos     *Coordinates
-	MsgID   int       // Telegram message ID с live-локацией водителя
-	Waiting bool      // ожидаем live-локацию от пользователя
-	Expiry  time.Time // дедлайн для отправки локации
-	WaitGen int       // поколение ожидания — для отмены устаревших таймеров
+	MsgID   int       // Telegram message ID for the driver's live-location pin
+	Waiting bool      // true while waiting for the driver to send a live location
+	Expiry  time.Time // deadline for sending the location
+	WaitGen int       // wait generation — used to cancel stale timers
 }
 
 // GroupSession holds all session-specific state for a single chat.
@@ -275,11 +275,11 @@ type Tracker struct {
 	bot           *bot.Bot
 	botUsername   string
 	aprs          *client.Client
-	devices       map[string]ddb.Device // кеш OGN Device Database для отображения модели/регистрации
+	devices       map[string]ddb.Device // OGN Device Database cache for model/registration display
 	mu            sync.Mutex            // guards session, users, devices
 	session       *GroupSession
 	users         map[int64]*UserInfo
-	resumeOnStart bool // флаг авто-возобновления трекинга после перезапуска
+	resumeOnStart bool // whether to auto-resume tracking on the next restart
 	// allowedChats is a whitelist of group chat IDs allowed to use the bot.
 	// Nil means "allow all" — preserves behaviour when ALLOWED_CHATS is unset.
 	// Populated once in NewTracker and never mutated thereafter.
@@ -482,7 +482,7 @@ func (t *Tracker) updateFilter() {
 }
 
 // loadDevices fetches the OGN DDB (device database) in the background.
-// Результат используется для отображения модели и регистрации рядом с ID.
+// The result is used to render aircraft model and registration next to the OGN ID.
 func (t *Tracker) loadDevices() {
 	devices, err := ddb.GetDevices()
 	if err != nil {

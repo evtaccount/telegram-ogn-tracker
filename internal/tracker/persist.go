@@ -115,8 +115,8 @@ func (t *Tracker) saveState() {
 		return
 	}
 
-	// Атомарная запись: пишем во временный файл, затем переименовываем,
-	// чтобы не потерять данные при сбое в середине записи.
+	// Atomic write: stage to a temp file then rename, so a crash mid-write
+	// does not corrupt the canonical state file.
 	tmp := sessionFile + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		log.Printf("failed to write session file: %v", err)

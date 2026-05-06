@@ -15,10 +15,10 @@ import (
 )
 
 const (
-	staleThreshold     = 5 * time.Minute  // данные старше этого помечаются предупреждением
-	updateInterval     = 30 * time.Second // интервал обновления сводки и live-локаций
-	liveLocationPeriod = 86400            // секунды жизни live-локации в Telegram (24ч)
-	reconnectDelay     = 5 * time.Second  // задержка перед переподключением к OGN APRS
+	staleThreshold     = 5 * time.Minute  // beacons older than this get a "stale data" badge
+	updateInterval     = 30 * time.Second // interval for refreshing the summary and live-locations
+	liveLocationPeriod = 86400            // Telegram live-location lifetime in seconds (24h)
+	reconnectDelay     = 5 * time.Second  // delay before reconnecting to the OGN APRS feed
 )
 
 // runClient connects to the OGN APRS server and processes position messages
