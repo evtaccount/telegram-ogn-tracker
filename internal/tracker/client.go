@@ -87,7 +87,22 @@ func (t *Tracker) runClient(stopCh <-chan struct{}, aprs *client.Client) {
 				ok = true
 				slog.Info("auto-discovered aircraft in area", "id", id)
 			}
-			if ok && info.Status != StatusPickedUp && !(info.Status == StatusLanded && info.LandingConfirmed) {
+			if !ok {
+				// Beacon passed the upstream filter but is not currently tracked.
+				// Useful when debugging "why isn't my id showing": confirms the
+				// beacon reaches us but no Tracking entry matches.
+				slog.Debug("ogn beacon not tracked", "id", id, "callsign", origID)
+			} else if info.Status == StatusPickedUp {
+				slog.Debug("ogn beacon dropped: pilot picked up", "id", id)
+			} else if info.Status == StatusLanded && info.LandingConfirmed {
+				slog.Debug("ogn beacon dropped: landing confirmed", "id", id)
+			} else {
+				slog.Debug("ogn beacon matched",
+					"id", id, "callsign", origID,
+					"lat", msg.Latitude, "lon", msg.Longitude,
+					"speed", msg.GroundSpeed, "climb", msg.ClimbRate,
+					"course", msg.Course, "alt", msg.Altitude,
+					"status", info.Status)
 				info.Position = msg
 				info.LastUpdate = time.Now()
 				if msg.Course > 0 {
@@ -208,6 +223,31 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		devices := t.devices
 		tz := s.tz()
 		t.mu.Unlock()
+
+		// Heartbeat: emit a per-cycle snapshot so it's obvious from the logs
+		// whether OGN beacons are reaching the bot, which pilots have valid
+		// positions, and how stale the most recent fix is.
+		var withPos, withoutPos int
+		var latest time.Time
+		for _, info := range local {
+			if info.Position != nil {
+				withPos++
+				if info.LastUpdate.After(latest) {
+					latest = info.LastUpdate
+				}
+			} else {
+				withoutPos++
+			}
+		}
+		stats := []any{
+			"tracked", len(local),
+			"with_position", withPos,
+			"without_position", withoutPos,
+		}
+		if !latest.IsZero() {
+			stats = append(stats, "last_beacon_age", time.Since(latest).Round(time.Second))
+		}
+		slog.Debug("ogn cycle stats", stats...)
 
 		if b == nil || len(local) == 0 {
 			continue
