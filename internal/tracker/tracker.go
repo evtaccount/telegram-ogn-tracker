@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -102,8 +103,12 @@ type GroupSession struct {
 	StopCh         chan struct{}
 	WaitingLanding bool
 	LandingExpiry  time.Time
-	WaitingArea    bool
-	AreaExpiry     time.Time
+	// DM landing flow uses a per-user flag so a stray location pin from
+	// another DM user can't satisfy a different user's pending request.
+	WaitingDMLandingFor int64
+	DMLandingExpiry     time.Time
+	WaitingArea         bool
+	AreaExpiry          time.Time
 	// Radar mode (runtime only):
 	RadarOn            bool
 	RadarRadius        int // radar-specific radius (may differ from TrackAreaRadius)
@@ -454,13 +459,24 @@ func (t *Tracker) loadDevices() {
 	log.Printf("loaded %d devices from OGN database", len(m))
 }
 
-// NewTracker creates a Tracker, restores persisted state, and loads the OGN DDB.
-func NewTracker() *Tracker {
+// NewTracker creates a Tracker, restores persisted state, fetches the bot
+// username, and loads the OGN DDB.
+// The *bot.Bot is taken at construction so the field is fixed before any
+// goroutine could read it — no further writes, no race.
+func NewTracker(b *bot.Bot) *Tracker {
 	t := &Tracker{
+		bot:   b,
 		aprs:  client.New("N0CALL", ""),
 		users: make(map[int64]*UserInfo),
 	}
 	t.aprs.Logger = log.Default()
+
+	if me, err := b.GetMe(context.Background()); err == nil {
+		t.botUsername = me.Username
+		log.Printf("bot username: @%s", t.botUsername)
+	} else {
+		log.Printf("failed to get bot info: %v", err)
+	}
 
 	// Restore previous session.
 	t.mu.Lock()
@@ -493,16 +509,6 @@ func (t *Tracker) ensureUser(from *models.User) *UserInfo {
 // RegisterHandlers wires all Telegram command and callback handlers
 // and auto-resumes tracking if it was active before the restart.
 func (t *Tracker) RegisterHandlers(b *bot.Bot) {
-	t.bot = b
-
-	// Fetch bot username for deep links.
-	if me, err := b.GetMe(context.Background()); err == nil {
-		t.botUsername = me.Username
-		log.Printf("bot username: @%s", t.botUsername)
-	} else {
-		log.Printf("failed to get bot info: %v", err)
-	}
-
 	b.RegisterHandler(bot.HandlerTypeMessageText, "start_session", bot.MatchTypeCommand, t.cmdStartSession)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "session_reset", bot.MatchTypeCommand, t.cmdSessionReset)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "add", bot.MatchTypeCommand, t.cmdAdd)
@@ -519,7 +525,10 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeMessageText, "radar", bot.MatchTypeCommand, t.cmdRadar)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "tz", bot.MatchTypeCommand, t.cmdTz)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "help", bot.MatchTypeCommand, t.cmdHelp)
-	b.RegisterHandler(bot.HandlerTypeMessageText, "debug_wipe", bot.MatchTypeCommand, t.cmdDebugWipe)
+	if os.Getenv("DEBUG") == "1" {
+		b.RegisterHandler(bot.HandlerTypeMessageText, "debug_wipe", bot.MatchTypeCommand, t.cmdDebugWipe)
+		log.Println("[debug] /debug_wipe handler registered (DEBUG=1)")
+	}
 	b.RegisterHandler(bot.HandlerTypeMessageText, "myid", bot.MatchTypeCommand, t.cmdMyID)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "confirm", bot.MatchTypeCommand, t.cmdConfirm)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "start", bot.MatchTypeCommand, t.cmdStart)

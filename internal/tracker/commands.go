@@ -169,8 +169,40 @@ func (t *Tracker) cmdStartPrivate(ctx context.Context, b *bot.Bot, m *models.Mes
 	}
 }
 
+// cmdStartSession unconditionally creates a fresh session in the current group
+// chat, dropping any pilot list and stopping tracking/radar.
+// Unlike /start (which prompts when pilots already exist), this is the explicit
+// "wipe and restart" entry point documented in README.
 func (t *Tracker) cmdStartSession(ctx context.Context, b *bot.Bot, update *models.Update) {
-	t.cmdStart(ctx, b, update)
+	m := update.Message
+	if m.From == nil || !t.isTrusted(m.From.ID) {
+		return
+	}
+	if !t.requireGroupChat(ctx, b, m) {
+		return
+	}
+
+	t.mu.Lock()
+	if t.session != nil {
+		t.stopTrackingAsync()
+		t.stopRadarAsync()
+	}
+	t.session = &GroupSession{
+		ChatID:   m.Chat.ID,
+		Tracking: make(map[string]*TrackInfo),
+		Drivers:  make(map[int64]*DriverInfo),
+	}
+	kb := t.session.replyKeyboard()
+	t.saveState()
+	t.mu.Unlock()
+
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      m.Chat.ID,
+		Text:        "Сессия пересоздана. Все пилоты удалены. Используйте /add <id> или /area.",
+		ReplyMarkup: kb,
+	}); err != nil {
+		log.Printf("failed to send start_session message: %v", err)
+	}
 }
 
 func (t *Tracker) cmdSessionReset(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -387,7 +419,7 @@ func (t *Tracker) cmdRemove(ctx context.Context, b *bot.Bot, update *models.Upda
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
-	if !t.requireSession(ctx, b, m.Chat.ID) {
+	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
 
@@ -820,8 +852,8 @@ func (t *Tracker) execDMLanding(ctx context.Context, b *bot.Bot, m *models.Messa
 		return
 	}
 
-	s.WaitingLanding = true
-	s.LandingExpiry = time.Now().Add(waitTimeout)
+	s.WaitingDMLandingFor = m.From.ID
+	s.DMLandingExpiry = time.Now().Add(waitTimeout)
 	t.mu.Unlock()
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -928,14 +960,14 @@ func (t *Tracker) handleDMLanding(ctx context.Context, b *bot.Bot, m *models.Mes
 		return
 	}
 
-	if !s.WaitingLanding || !time.Now().Before(s.LandingExpiry) {
+	if s.WaitingDMLandingFor != m.From.ID || !time.Now().Before(s.DMLandingExpiry) {
 		t.mu.Unlock()
 		return
 	}
 
 	log.Printf("[landing/DM] location set at %.5f,%.5f by user=%d", loc.Latitude, loc.Longitude, m.From.ID)
 	s.Landing = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
-	s.WaitingLanding = false
+	s.WaitingDMLandingFor = 0
 
 	// Mark the sender as landed.
 	var landedName string
@@ -1111,7 +1143,7 @@ func (t *Tracker) cmdDriverOff(ctx context.Context, b *bot.Bot, update *models.U
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
-	if !t.requireGroupChat(ctx, b, m) {
+	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
 	t.execDriverOff(ctx, b, m.Chat.ID, m.From.ID)
@@ -1139,7 +1171,7 @@ func (t *Tracker) cmdAreaOff(ctx context.Context, b *bot.Bot, update *models.Upd
 	if m.From == nil || !t.isTrusted(m.From.ID) {
 		return
 	}
-	if !t.requireGroupChat(ctx, b, m) {
+	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
 	t.execAreaOff(ctx, b, m.Chat.ID)

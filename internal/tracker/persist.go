@@ -118,7 +118,7 @@ func (t *Tracker) saveState() {
 	// Атомарная запись: пишем во временный файл, затем переименовываем,
 	// чтобы не потерять данные при сбое в середине записи.
 	tmp := sessionFile + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		log.Printf("failed to write session file: %v", err)
 		return
 	}
