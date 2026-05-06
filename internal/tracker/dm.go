@@ -121,6 +121,16 @@ func (t *Tracker) cmdMyID(ctx context.Context, b *bot.Bot, update *models.Update
 
 	// Set new OGN ID.
 	newID := shortID(arg)
+	if !isValidShortID(newID) {
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   fmt.Sprintf("OGN ID %q некорректен. Нужно 6 hex-символов (0-9, A-F).", arg),
+		}); err != nil {
+			log.Printf("failed to send invalid ognid message: %v", err)
+		}
+		return
+	}
 	oldID := u.OGNID
 	u.OGNID = newID
 

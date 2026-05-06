@@ -18,6 +18,15 @@ import (
 // If only a name is provided without @username, the bot cannot send DM to the pilot.
 func (t *Tracker) execAddDirect(ctx context.Context, b *bot.Bot, m *models.Message, args []string) {
 	id := shortID(args[0])
+	if !isValidShortID(id) {
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   fmt.Sprintf("OGN ID %q некорректен. Ожидаются 6 hex-символов (0-9, A-F).", args[0]),
+		}); err != nil {
+			log.Printf("failed to send invalid ognid message: %v", err)
+		}
+		return
+	}
 
 	// Parse remaining args: name tokens and optional @username.
 	var display string

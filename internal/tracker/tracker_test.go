@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -329,6 +330,73 @@ func TestSaveStateAsync(t *testing.T) {
 		default:
 		}
 	})
+}
+
+func TestIsValidShortID(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"FE0E4A", true},
+		{"123ABC", true},
+		{"ABCDEF", true},
+		{"000000", true},
+		{"FFFFFF", true},
+		{"", false},
+		{"FE0E4", false},   // 5 chars
+		{"FE0E4AB", false}, // 7 chars
+		{"GE0E4A", false},  // G is not hex
+		{"FE0E4G", false},  // G is not hex
+		{"fe0e4a", false},  // lowercase — caller should run shortID first
+		{"AB CDE", false},  // space
+		{"AB-CDE", false},  // dash
+		{"АВ123Б", false},  // cyrillic
+	}
+	for _, c := range cases {
+		got := isValidShortID(c.in)
+		if got != c.want {
+			t.Errorf("isValidShortID(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestIsMessageNotModified(t *testing.T) {
+	t.Run("nil error", func(t *testing.T) {
+		if isMessageNotModified(nil) {
+			t.Error("nil should return false")
+		}
+	})
+	t.Run("matches substring", func(t *testing.T) {
+		err := errors.New("Bad Request: message is not modified: specified content...")
+		if !isMessageNotModified(err) {
+			t.Error("expected substring match")
+		}
+	})
+	t.Run("unrelated error", func(t *testing.T) {
+		err := errors.New("network is unreachable")
+		if isMessageNotModified(err) {
+			t.Error("unrelated error should not match")
+		}
+	})
+}
+
+func TestNextReconnectDelay(t *testing.T) {
+	cases := []struct {
+		in   time.Duration
+		want time.Duration
+	}{
+		{1 * time.Second, 2 * time.Second},
+		{2 * time.Second, 4 * time.Second},
+		{30 * time.Second, 60 * time.Second},
+		{60 * time.Second, 60 * time.Second},  // already at cap
+		{120 * time.Second, 60 * time.Second}, // overshoots cap
+	}
+	for _, c := range cases {
+		got := nextReconnectDelay(c.in)
+		if got != c.want {
+			t.Errorf("nextReconnectDelay(%v) = %v, want %v", c.in, got, c.want)
+		}
+	}
 }
 
 func TestStaleLowSpeedReset(t *testing.T) {

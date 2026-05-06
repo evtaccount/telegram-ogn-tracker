@@ -376,6 +376,34 @@ func shortID(id string) string {
 	return id[len(id)-6:]
 }
 
+// isValidShortID reports whether s is exactly 6 uppercase hex characters,
+// which is the canonical form of an OGN device address. Used at user-input
+// boundaries (commands, DM messages) so non-hex garbage never reaches the
+// APRS budlist filter.
+func isValidShortID(s string) bool {
+	if len(s) != 6 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isMessageNotModified detects the harmless Telegram error returned when an
+// edit would not change the message contents. The library does not expose a
+// typed error, so we match on the substring; centralised here so a future
+// SDK change only needs one fix.
+func isMessageNotModified(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "message is not modified")
+}
+
 // distanceAndBearing computes distance (km) and bearing between two points
 // using CheapRuler for fast approximate calculations at paragliding distances.
 func distanceAndBearing(lat1, lon1, lat2, lon2 float64) (distKm float64, bearing float64) {
@@ -874,6 +902,16 @@ func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Messag
 	}
 
 	id := shortID(m.Text)
+	if !isValidShortID(id) {
+		t.mu.Unlock()
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: m.Chat.ID,
+			Text:   "Это не похоже на OGN ID. Пришлите 6 шестнадцатеричных символов (0-9, A-F), например FE0E4A.",
+		}); err != nil {
+			log.Printf("failed to send invalid ognid message: %v", err)
+		}
+		return
+	}
 	groupChatID := s.ChatID
 
 	// Add to session (reset status — fresh add).
