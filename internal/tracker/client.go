@@ -426,8 +426,40 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		ctx := context.Background()
 
 		// Update per-pilot live locations on the map (skip auto-discovered).
+		// Each pilot has a paired text label that names them; the label is
+		// sent right before the first live-location pin and the pin replies to
+		// it so the chat shows "Eugene (FE0E4A)" above the otherwise-anonymous
+		// map preview. The label's emoji tracks status (✈️ → 🪂 → ✅) and is
+		// edited in place on status transitions.
 		for id, info := range local {
-			if info.Position == nil || info.Status == StatusPickedUp || info.AutoDiscovered {
+			if info.AutoDiscovered {
+				continue
+			}
+
+			// Reflect status changes on the label even after we stop touching
+			// the live-location pin (picked up / confirmed landing). Without
+			// this the emoji would be frozen at whatever it was at the last
+			// position update.
+			if info.LabelMsgID != 0 && info.Status != info.LabelStatus {
+				newText := pilotLabelText(id, info)
+				if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+					ChatID:    chatID,
+					MessageID: info.LabelMsgID,
+					Text:      newText,
+				}); err != nil && !isMessageNotModified(err) {
+					slog.Error("failed to edit pilot label", "id", id, "err", err)
+				} else {
+					t.mu.Lock()
+					if t.session != nil {
+						if ti, ok := t.session.Tracking[id]; ok {
+							ti.LabelStatus = info.Status
+						}
+					}
+					t.mu.Unlock()
+				}
+			}
+
+			if info.Position == nil || info.Status == StatusPickedUp {
 				continue
 			}
 			if info.Status == StatusLanded && info.LandingConfirmed {
@@ -449,30 +481,60 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 				if _, err := b.EditMessageLiveLocation(ctx, editParams); err != nil && !isMessageNotModified(err) {
 					slog.Error("failed to edit location", "id", id, "err", err)
 				}
-			} else {
-				sendParams := &bot.SendLocationParams{
-					ChatID:     chatID,
-					Latitude:   info.Position.Latitude,
-					Longitude:  info.Position.Longitude,
-					LivePeriod: liveLocationPeriod,
-				}
-				if heading > 0 {
-					sendParams.Heading = heading
-				}
-				locMsg, err := b.SendLocation(ctx, sendParams)
+				continue
+			}
+
+			// First-time send: ensure the label exists, then send the
+			// live-location as a reply to it. If the label send fails we
+			// skip the pin so they retry together on the next tick — better
+			// to delay tracking by 30s than to orphan an unlabelled pin.
+			if info.LabelMsgID == 0 {
+				labelMsg, err := b.SendMessage(ctx, &bot.SendMessageParams{
+					ChatID: chatID,
+					Text:   pilotLabelText(id, info),
+				})
 				if err != nil {
-					slog.Error("failed to send location", "id", id, "err", err)
+					slog.Error("failed to send pilot label", "id", id, "err", err)
 					continue
 				}
 				t.mu.Lock()
 				if t.session != nil {
 					if ti, ok := t.session.Tracking[id]; ok {
-						ti.MessageID = locMsg.ID
+						ti.LabelMsgID = labelMsg.ID
+						ti.LabelStatus = info.Status
 					}
 				}
 				t.mu.Unlock()
-				slog.Info("sent location", "id", id)
+				info.LabelMsgID = labelMsg.ID
+				info.LabelStatus = info.Status
 			}
+
+			sendParams := &bot.SendLocationParams{
+				ChatID:     chatID,
+				Latitude:   info.Position.Latitude,
+				Longitude:  info.Position.Longitude,
+				LivePeriod: liveLocationPeriod,
+				ReplyParameters: &models.ReplyParameters{
+					MessageID:                info.LabelMsgID,
+					AllowSendingWithoutReply: true,
+				},
+			}
+			if heading > 0 {
+				sendParams.Heading = heading
+			}
+			locMsg, err := b.SendLocation(ctx, sendParams)
+			if err != nil {
+				slog.Error("failed to send location", "id", id, "err", err)
+				continue
+			}
+			t.mu.Lock()
+			if t.session != nil {
+				if ti, ok := t.session.Tracking[id]; ok {
+					ti.MessageID = locMsg.ID
+				}
+			}
+			t.mu.Unlock()
+			slog.Info("sent location", "id", id)
 		}
 
 		// Send or update the single summary message. newSummaryID tracks
