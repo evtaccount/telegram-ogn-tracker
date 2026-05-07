@@ -386,16 +386,18 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			t.session.WaitingRadarRadius = false
 			chatID := m.Chat.ID
 			t.mu.Unlock()
+			var ackID int
 			if r, err := strconv.Atoi(strings.TrimSpace(m.Text)); err != nil || r <= 0 || r > maxAreaRadius {
-				if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+				ackID = t.sendAck(ctx, &bot.SendMessageParams{
 					ChatID: chatID,
 					Text:   fmt.Sprintf("Укажите число от 1 до %d", maxAreaRadius),
-				}); err != nil {
-					slog.Error("failed to send invalid radar radius message", "err", err)
-				}
+				}, "failed to send invalid radar radius message")
 			} else {
-				t.execRadarSetRadius(ctx, b, chatID, r)
+				ackID = t.execRadarSetRadius(ctx, b, chatID, r)
 			}
+			// Drain (button-press + prompt) and clean together with the
+			// user's typed number + final ack/error.
+			t.finalizePendingCleanup(m.From.ID, chatID, m.ID, ackID)
 			return
 		}
 		t.mu.Unlock()
@@ -423,7 +425,7 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			}
 		case "⏹ Стоп":
 			if t.requireSession(ctx, b, chatID) {
-				t.askTrackOffConfirm(ctx, b, chatID)
+				t.askTrackOffConfirm(ctx, b, chatID, m.From.ID, m.ID)
 			}
 		case "📋 Список":
 			if t.requireSession(ctx, b, chatID) {
@@ -431,7 +433,7 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			}
 		case "📡 Зона":
 			if t.requireSession(ctx, b, chatID) {
-				t.execArea(ctx, b, chatID, defaultAreaRadius)
+				t.execArea(ctx, b, chatID, defaultAreaRadius, m.From.ID, m.ID)
 			}
 		case "📡 Зона ✕":
 			if t.requireSession(ctx, b, chatID) {
@@ -441,7 +443,7 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			}
 		case "🚗 Водитель":
 			if t.requireSession(ctx, b, chatID) {
-				t.execDriver(ctx, b, chatID, m.From.ID, m.From.Username)
+				t.execDriver(ctx, b, chatID, m.From.ID, m.From.Username, m.ID)
 			}
 		case "📡 Радар":
 			if t.requireSession(ctx, b, chatID) {
@@ -457,11 +459,11 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			}
 		case "📡 Радиус":
 			if t.requireSession(ctx, b, chatID) {
-				t.execRadarAskRadius(ctx, b, chatID)
+				t.execRadarAskRadius(ctx, b, chatID, m.From.ID, m.ID)
 			}
 		case "🔄 Завершить":
 			if t.requireSession(ctx, b, chatID) {
-				t.askSessionResetConfirm(ctx, b, chatID)
+				t.askSessionResetConfirm(ctx, b, chatID, m.From.ID, m.ID)
 			}
 		}
 	}
@@ -550,11 +552,12 @@ func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Messag
 	if name != "" {
 		label = id + " (" + name + ")"
 	}
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	groupAckID := t.sendAck(ctx, &bot.SendMessageParams{
 		ChatID:      groupChatID,
 		Text:        "Добавлен " + label,
 		ReplyMarkup: kb,
-	}); err != nil {
-		slog.Error("failed to confirm add in group", "err", err)
-	}
+	}, "failed to confirm add in group")
+	// Finalize the /add no-arg chain: drain (group cmd + "Написал в личку")
+	// queued under this user, append the group ack, schedule batch cleanup.
+	t.finalizePendingCleanup(m.From.ID, groupChatID, groupAckID)
 }

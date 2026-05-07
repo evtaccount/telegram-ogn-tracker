@@ -95,7 +95,7 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	t.mu.Lock()
 	if t.session != nil && t.session.ChatID == m.Chat.ID && len(t.session.Tracking) > 0 {
 		t.mu.Unlock()
-		t.askStartChoice(ctx, b, m.Chat.ID)
+		t.askStartChoice(ctx, b, m.Chat.ID, m.From.ID, m.ID)
 		return
 	}
 	// No session or empty session — create fresh.
@@ -161,7 +161,7 @@ func (t *Tracker) cmdSessionReset(ctx context.Context, b *bot.Bot, update *model
 	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
-	t.askSessionResetConfirm(ctx, b, m.Chat.ID)
+	t.askSessionResetConfirm(ctx, b, m.Chat.ID, m.From.ID, m.ID)
 }
 
 func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -228,11 +228,16 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 		t.saveState()
 		t.mu.Unlock()
 
-		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ackID := t.sendAck(ctx, &bot.SendMessageParams{
 			ChatID: m.Chat.ID,
 			Text:   "Написал вам в личку",
-		}); err != nil {
-			slog.Error("failed to confirm DM sent in group", "err", err)
+		}, "failed to confirm DM sent in group")
+		// Queue (cmd + this ack) for cleanup; the DM bridge's group "Добавлен"
+		// reply will finalize the chain.
+		if ackID != 0 {
+			t.mu.Lock()
+			t.appendPendingCleanup(m.From.ID, m.ID, ackID)
+			t.mu.Unlock()
 		}
 		return
 	}
@@ -247,12 +252,15 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 			},
 		},
 	}
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	ackID := t.sendAck(ctx, &bot.SendMessageParams{
 		ChatID:      m.Chat.ID,
 		Text:        "Напишите мне в личку, чтобы добавить свой трекер",
 		ReplyMarkup: kb,
-	}); err != nil {
-		slog.Error("failed to send deep link button", "err", err)
+	}, "failed to send deep link button")
+	if ackID != 0 {
+		t.mu.Lock()
+		t.appendPendingCleanup(m.From.ID, m.ID, ackID)
+		t.mu.Unlock()
 	}
 }
 
@@ -313,7 +321,7 @@ func (t *Tracker) cmdTrackOff(ctx context.Context, b *bot.Bot, update *models.Up
 	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
-	t.askTrackOffConfirm(ctx, b, m.Chat.ID)
+	t.askTrackOffConfirm(ctx, b, m.Chat.ID, m.From.ID, m.ID)
 }
 
 func (t *Tracker) cmdList(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -361,6 +369,7 @@ func (t *Tracker) cmdStatus(ctx context.Context, b *bot.Bot, update *models.Upda
 	}
 }
 
+// cmdLanding initiates the landing-pin flow.
 func (t *Tracker) cmdLanding(ctx context.Context, b *bot.Bot, update *models.Update) {
 	m := update.Message
 	if m.From == nil || !t.isTrusted(m.From.ID) {
@@ -369,7 +378,7 @@ func (t *Tracker) cmdLanding(ctx context.Context, b *bot.Bot, update *models.Upd
 	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
-	t.execLanding(ctx, b, m.Chat.ID)
+	t.execLanding(ctx, b, m.Chat.ID, m.From.ID, m.ID)
 }
 
 func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -487,7 +496,7 @@ func (t *Tracker) cmdDriver(ctx context.Context, b *bot.Bot, update *models.Upda
 	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
-	t.execDriver(ctx, b, m.Chat.ID, m.From.ID, m.From.Username)
+	t.execDriver(ctx, b, m.Chat.ID, m.From.ID, m.From.Username, m.ID)
 }
 
 func (t *Tracker) cmdDriverOff(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -517,7 +526,7 @@ func (t *Tracker) cmdArea(ctx context.Context, b *bot.Bot, update *models.Update
 			radius = r
 		}
 	}
-	t.execArea(ctx, b, m.Chat.ID, radius)
+	t.execArea(ctx, b, m.Chat.ID, radius, m.From.ID, m.ID)
 }
 
 func (t *Tracker) cmdAreaOff(ctx context.Context, b *bot.Bot, update *models.Update) {

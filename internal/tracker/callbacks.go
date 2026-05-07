@@ -89,8 +89,11 @@ func (t *Tracker) cbTrackOn(ctx context.Context, b *bot.Bot, update *models.Upda
 }
 
 func (t *Tracker) cbTrackOff(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
 	t.handleCallback(ctx, b, update, func(chatID int64) {
-		t.askTrackOffConfirm(ctx, b, chatID)
+		// Callback re-entry has no triggering user message; pass 0 so the
+		// confirm prompt isn't paired with anything for cleanup.
+		t.askTrackOffConfirm(ctx, b, chatID, cq.From.ID, 0)
 	})
 }
 
@@ -101,8 +104,9 @@ func (t *Tracker) cbList(ctx context.Context, b *bot.Bot, update *models.Update)
 }
 
 func (t *Tracker) cbLanding(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
 	t.handleCallback(ctx, b, update, func(chatID int64) {
-		t.execLanding(ctx, b, chatID)
+		t.execLanding(ctx, b, chatID, cq.From.ID, 0)
 	})
 }
 
@@ -115,7 +119,7 @@ func (t *Tracker) cbDriver(ctx context.Context, b *bot.Bot, update *models.Updat
 	chatID := t.sessionChatID()
 	t.mu.Unlock()
 	if chatID != 0 {
-		t.execDriver(ctx, b, chatID, cq.From.ID, cq.From.Username)
+		t.execDriver(ctx, b, chatID, cq.From.ID, cq.From.Username, 0)
 	}
 }
 
@@ -145,7 +149,7 @@ func (t *Tracker) cbArea(ctx context.Context, b *bot.Bot, update *models.Update)
 	}
 	t.mu.Unlock()
 	if chatID != 0 {
-		t.execArea(ctx, b, chatID, radius)
+		t.execArea(ctx, b, chatID, radius, cq.From.ID, 0)
 	}
 }
 
@@ -156,44 +160,65 @@ func (t *Tracker) cbAreaOff(ctx context.Context, b *bot.Bot, update *models.Upda
 }
 
 func (t *Tracker) cbSessionReset(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
 	t.handleCallback(ctx, b, update, func(chatID int64) {
-		t.askSessionResetConfirm(ctx, b, chatID)
+		t.askSessionResetConfirm(ctx, b, chatID, cq.From.ID, 0)
 	})
 }
 
 func (t *Tracker) cbSessionResetConfirm(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
 	t.handleCallbackWithDelete(ctx, b, update, func(chatID int64) {
-		t.execSessionReset(ctx, b, chatID, false)
+		ackID := t.execSessionReset(ctx, b, chatID, false)
+		t.finalizePendingCleanup(cq.From.ID, chatID, ackID)
 	})
 }
 
 func (t *Tracker) cbSessionResetWipe(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
 	t.handleCallbackWithDelete(ctx, b, update, func(chatID int64) {
-		t.execSessionReset(ctx, b, chatID, true)
+		ackID := t.execSessionReset(ctx, b, chatID, true)
+		t.finalizePendingCleanup(cq.From.ID, chatID, ackID)
 	})
 }
 
 func (t *Tracker) cbSessionResetCancel(ctx context.Context, b *bot.Bot, update *models.Update) {
 	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
+	chatID := t.callbackChatAllowed(ctx, b, cq)
+	if chatID == 0 {
+		return
+	}
 	deleteCallbackMessage(ctx, b, cq)
+	t.finalizePendingCleanup(cq.From.ID, chatID)
 }
 
 func (t *Tracker) cbTrackOffConfirm(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
 	t.handleCallbackWithDelete(ctx, b, update, func(chatID int64) {
-		t.execTrackOff(ctx, b, chatID)
+		ackID := t.execTrackOff(ctx, b, chatID)
+		t.finalizePendingCleanup(cq.From.ID, chatID, ackID)
 	})
 }
 
 func (t *Tracker) cbTrackOffCancel(ctx context.Context, b *bot.Bot, update *models.Update) {
 	cq := update.CallbackQuery
-	t.answerCallback(ctx, b, cq)
+	chatID := t.callbackChatAllowed(ctx, b, cq)
+	if chatID == 0 {
+		return
+	}
 	deleteCallbackMessage(ctx, b, cq)
+	// No final ack on cancel — drain the queued user-command + prompt IDs and
+	// schedule them for deletion. The prompt was just removed synchronously by
+	// deleteCallbackMessage; the duplicate delete attempt 5s later will warn
+	// once and is harmless.
+	t.finalizePendingCleanup(cq.From.ID, chatID)
 }
 
 func (t *Tracker) cbStartResume(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
 	t.handleCallbackWithDelete(ctx, b, update, func(chatID int64) {
-		t.execTrackOn(ctx, b, chatID)
+		ackID := t.execTrackOn(ctx, b, chatID)
+		t.finalizePendingCleanup(cq.From.ID, chatID, ackID)
 	})
 }
 
@@ -217,6 +242,7 @@ func (t *Tracker) cbStartFresh(ctx context.Context, b *bot.Bot, update *models.U
 	t.saveState()
 	t.mu.Unlock()
 	if chatID != 0 {
-		t.execTrackOn(ctx, b, chatID)
+		ackID := t.execTrackOn(ctx, b, chatID)
+		t.finalizePendingCleanup(cq.From.ID, chatID, ackID)
 	}
 }

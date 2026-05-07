@@ -253,13 +253,14 @@ func (t *Tracker) cmdConfirm(ctx context.Context, b *bot.Bot, update *models.Upd
 	if name != "" {
 		label = id + " (" + name + ")"
 	}
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	groupAckID := t.sendAck(ctx, &bot.SendMessageParams{
 		ChatID:      groupChatID,
 		Text:        "Добавлен " + label,
 		ReplyMarkup: kb,
-	}); err != nil {
-		slog.Error("failed to confirm in group", "err", err)
-	}
+	}, "failed to confirm in group")
+	// Same finalize as handleDMText: drain queued (cmd + "Написал в личку")
+	// for this user and clean together with the group ack.
+	t.finalizePendingCleanup(m.From.ID, groupChatID, groupAckID)
 }
 
 // execDMLanding initiates the landing flow from a private chat.
