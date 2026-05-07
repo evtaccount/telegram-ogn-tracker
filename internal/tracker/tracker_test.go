@@ -437,6 +437,103 @@ func TestIsMessageNotModified(t *testing.T) {
 	})
 }
 
+func TestPendingCleanupQueue(t *testing.T) {
+	t.Run("append then drain returns ids in order", func(t *testing.T) {
+		tr := &Tracker{
+			users:   make(map[int64]*UserInfo),
+			session: &GroupSession{ChatID: -100, Tracking: map[string]*TrackInfo{}},
+		}
+		tr.appendPendingCleanup(42, 1, 2)
+		tr.appendPendingCleanup(42, 3)
+		got := tr.drainPendingCleanup(42)
+		want := []int{1, 2, 3}
+		if len(got) != len(want) {
+			t.Fatalf("drain len=%d want=%d (%v)", len(got), len(want), got)
+		}
+		for i, v := range want {
+			if got[i] != v {
+				t.Errorf("drain[%d]=%d want=%d", i, got[i], v)
+			}
+		}
+		// After draining, the entry should be gone.
+		if v := tr.drainPendingCleanup(42); v != nil {
+			t.Errorf("expected empty queue after drain, got %v", v)
+		}
+	})
+
+	t.Run("queues are isolated per user", func(t *testing.T) {
+		tr := &Tracker{
+			users:   make(map[int64]*UserInfo),
+			session: &GroupSession{ChatID: -100, Tracking: map[string]*TrackInfo{}},
+		}
+		tr.appendPendingCleanup(1, 10, 11)
+		tr.appendPendingCleanup(2, 20)
+		got1 := tr.drainPendingCleanup(1)
+		if len(got1) != 2 || got1[0] != 10 || got1[1] != 11 {
+			t.Errorf("user 1 drain: got %v want [10 11]", got1)
+		}
+		got2 := tr.drainPendingCleanup(2)
+		if len(got2) != 1 || got2[0] != 20 {
+			t.Errorf("user 2 drain: got %v want [20]", got2)
+		}
+	})
+
+	t.Run("nil session is a no-op", func(t *testing.T) {
+		tr := &Tracker{users: make(map[int64]*UserInfo)}
+		tr.appendPendingCleanup(1, 100) // must not panic
+		if got := tr.drainPendingCleanup(1); got != nil {
+			t.Errorf("drain on nil session should return nil, got %v", got)
+		}
+	})
+
+	t.Run("forget discards queued ids without scheduling", func(t *testing.T) {
+		tr := &Tracker{
+			users:   make(map[int64]*UserInfo),
+			session: &GroupSession{ChatID: -100, Tracking: map[string]*TrackInfo{}},
+		}
+		tr.appendPendingCleanup(1, 5, 6, 7)
+		tr.forgetPendingCleanup(1)
+		if got := tr.drainPendingCleanup(1); got != nil {
+			t.Errorf("expected nothing after forget, got %v", got)
+		}
+	})
+
+	t.Run("zero userID and empty msgIDs are ignored", func(t *testing.T) {
+		tr := &Tracker{
+			users:   make(map[int64]*UserInfo),
+			session: &GroupSession{ChatID: -100, Tracking: map[string]*TrackInfo{}},
+		}
+		tr.appendPendingCleanup(0, 1, 2)
+		tr.appendPendingCleanup(7) // no msgIDs
+		if got := tr.drainPendingCleanup(0); got != nil {
+			t.Errorf("zero userID should be ignored, got %v", got)
+		}
+		if got := tr.drainPendingCleanup(7); got != nil {
+			t.Errorf("empty msgIDs should not create an entry, got %v", got)
+		}
+	})
+
+	t.Run("scheduleEphemeralDelete with nil bot does not crash", func(t *testing.T) {
+		tr := &Tracker{users: make(map[int64]*UserInfo)}
+		// bot is nil — must early-return without firing a goroutine that would NPE.
+		tr.scheduleEphemeralDelete(-100, 1, 2, 3)
+	})
+
+	t.Run("finalizePendingCleanup combines drain + final ids", func(t *testing.T) {
+		// Test the drain-and-combine logic by inspecting state before/after.
+		// Schedule call itself is a no-op since bot is nil.
+		tr := &Tracker{
+			users:   make(map[int64]*UserInfo),
+			session: &GroupSession{ChatID: -100, Tracking: map[string]*TrackInfo{}},
+		}
+		tr.appendPendingCleanup(1, 100, 101)
+		tr.finalizePendingCleanup(1, -100, 102) // would fire delete([100,101,102])
+		if got := tr.drainPendingCleanup(1); got != nil {
+			t.Errorf("queue should be empty after finalize, got %v", got)
+		}
+	})
+}
+
 func TestShouldAttemptPin(t *testing.T) {
 	cases := []struct {
 		name    string
