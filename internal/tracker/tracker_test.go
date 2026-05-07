@@ -437,6 +437,29 @@ func TestIsMessageNotModified(t *testing.T) {
 	})
 }
 
+func TestShouldAttemptPin(t *testing.T) {
+	cases := []struct {
+		name    string
+		pinned  bool
+		withPos int
+		want    bool
+	}{
+		{"not pinned, no positions yet", false, 0, false},
+		{"not pinned, one position", false, 1, true},
+		{"not pinned, many positions", false, 5, true},
+		{"already pinned, no positions", true, 0, false},
+		{"already pinned, with positions", true, 5, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := shouldAttemptPin(c.pinned, c.withPos)
+			if got != c.want {
+				t.Errorf("shouldAttemptPin(%v, %d) = %v, want %v", c.pinned, c.withPos, got, c.want)
+			}
+		})
+	}
+}
+
 func TestNextReconnectDelay(t *testing.T) {
 	cases := []struct {
 		in   time.Duration

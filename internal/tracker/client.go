@@ -34,6 +34,14 @@ func nextReconnectDelay(d time.Duration) time.Duration {
 	return d
 }
 
+// shouldAttemptPin reports whether the summary message warrants a pin attempt
+// on this tick. We only pin once per session (so we don't re-notify after a
+// transient unpin race) and only after at least one pilot has reported a
+// position — pinning an empty "waiting for data" board would be premature.
+func shouldAttemptPin(pinned bool, withPos int) bool {
+	return !pinned && withPos > 0
+}
+
 // buildFilter assembles the APRS filter for a session from the explicitly
 // tracked pilots and the optional area zone. Pure function, no Tracker state
 // touched — easy to unit-test.
@@ -348,6 +356,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		}
 		b := t.bot
 		summaryMsgID := s.SummaryMsgID
+		summaryPinned := s.SummaryPinned
 		local := make(map[string]*TrackInfo)
 		for id, info := range s.Tracking {
 			cp := *info
@@ -440,9 +449,12 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			}
 		}
 
-		// Send or update the single summary message.
+		// Send or update the single summary message. newSummaryID tracks
+		// whichever ID the summary now lives at — used by the pin block below
+		// to know whether we have a stable target to pin.
 		summary := buildSummary(local, landing, drivers, areaRadius, devices, tz)
 		kb := pilotButtons(local)
+		newSummaryID := 0
 		if summaryMsgID != 0 {
 			editParams := &bot.EditMessageTextParams{
 				ChatID:    chatID,
@@ -455,6 +467,11 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			if _, err := b.EditMessageText(ctx, editParams); err != nil && !isMessageNotModified(err) {
 				slog.Error("failed to edit summary", "err", err)
 			}
+			// Treat the message as still alive even on transient edit errors —
+			// next tick will retry the edit. Hard "message not found" cases
+			// will surface as repeated warnings; addressed separately if it
+			// becomes noisy.
+			newSummaryID = summaryMsgID
 		} else {
 			sendParams := &bot.SendMessageParams{
 				ChatID: chatID,
@@ -467,9 +484,34 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			if err != nil {
 				slog.Error("failed to send summary", "err", err)
 			} else {
+				newSummaryID = msg.ID
 				t.mu.Lock()
 				if t.session != nil {
 					t.session.SummaryMsgID = msg.ID
+				}
+				t.mu.Unlock()
+			}
+		}
+
+		// Pin the summary so it stays visible regardless of new chat traffic
+		// or freshly-sent live-location pins. Silent pin (DisableNotification)
+		// suppresses both the push and the "Bot pinned a message" service
+		// message. Failures (e.g. missing admin rights) leave SummaryPinned
+		// false so the next tick retries; once pinned, the snapshot path
+		// short-circuits forever.
+		if newSummaryID != 0 && shouldAttemptPin(summaryPinned, withPos) {
+			if _, err := b.PinChatMessage(ctx, &bot.PinChatMessageParams{
+				ChatID:              chatID,
+				MessageID:           newSummaryID,
+				DisableNotification: true,
+			}); err != nil {
+				slog.Warn("failed to pin summary", "err", err)
+			} else {
+				slog.Info("summary pinned", "msg_id", newSummaryID)
+				t.mu.Lock()
+				if t.session != nil && t.session.SummaryMsgID == newSummaryID {
+					t.session.SummaryPinned = true
+					t.saveState()
 				}
 				t.mu.Unlock()
 			}
