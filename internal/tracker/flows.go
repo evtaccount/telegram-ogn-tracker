@@ -255,6 +255,20 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 		t.stopTrackingAsync()
 		t.stopRadarAsync()
 	}
+	// Collect every label / live-loc message belonging to the previous
+	// session — both branches abandon them (wipe drops the pilots entirely;
+	// keep-pilots copies only Name/Username/OwnerUserID, never the IDs).
+	var orphanMsgIDs []int
+	if t.session != nil {
+		for _, info := range t.session.Tracking {
+			if info.LabelMsgID != 0 {
+				orphanMsgIDs = append(orphanMsgIDs, info.LabelMsgID)
+			}
+			if info.MessageID != 0 {
+				orphanMsgIDs = append(orphanMsgIDs, info.MessageID)
+			}
+		}
+	}
 	newSession := &GroupSession{
 		ChatID:   chatID,
 		Tracking: make(map[string]*TrackInfo),
@@ -280,6 +294,8 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 		markup = t.session.replyKeyboard()
 	}
 	t.mu.Unlock()
+
+	t.deleteMessagesAsync(chatID, orphanMsgIDs...)
 
 	text := "Сессия сброшена. Пилоты сохранены."
 	if wipePilots {
@@ -321,12 +337,24 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) int
 			ReplyMarkup: kb,
 		}, "failed to confirm track_on")
 	}
-	// Reset pilot statuses for a fresh tracking session.
+	// Reset pilot statuses for a fresh tracking session. Capture each pilot's
+	// previous label + live-location IDs before zeroing them so we can clean
+	// the orphans out of the chat — otherwise the previous run's "Eugene
+	// (FE0E4A) ✈️" cards linger next to the brand new ones.
+	var orphanMsgIDs []int
 	for _, info := range s.Tracking {
+		if info.LabelMsgID != 0 {
+			orphanMsgIDs = append(orphanMsgIDs, info.LabelMsgID)
+		}
+		if info.MessageID != 0 {
+			orphanMsgIDs = append(orphanMsgIDs, info.MessageID)
+		}
 		info.Status = StatusFlying
 		info.LandingTime = time.Time{}
 		info.LowSpeedSince = time.Time{}
 		info.MessageID = 0
+		info.LabelMsgID = 0
+		info.LabelStatus = StatusFlying
 		info.Position = nil
 		info.LastUpdate = time.Time{}
 	}
@@ -356,6 +384,7 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) int
 	if wasPinned {
 		t.unpinSummaryAsync(chatID, oldSummaryID)
 	}
+	t.deleteMessagesAsync(chatID, orphanMsgIDs...)
 
 	slog.Info("tracking on", "pilots", count, "area", hasArea, "chat_id", chatID)
 	go t.runClient(stopCh, aprs)

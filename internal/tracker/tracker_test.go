@@ -534,6 +534,60 @@ func TestPendingCleanupQueue(t *testing.T) {
 	})
 }
 
+func TestPilotLabelText(t *testing.T) {
+	cases := []struct {
+		name string
+		id   string
+		info *TrackInfo
+		want string
+	}{
+		{
+			name: "flying with display name",
+			id:   "FE0E4A",
+			info: &TrackInfo{Name: "Eugene", Status: StatusFlying},
+			want: "✈️ Eugene (FE0E4A)",
+		},
+		{
+			name: "flying with username only",
+			id:   "FE0E4A",
+			info: &TrackInfo{Username: "evt", Status: StatusFlying},
+			want: "✈️ evt (FE0E4A)",
+		},
+		{
+			name: "no name, fallback to id",
+			id:   "ABCDEF",
+			info: &TrackInfo{Status: StatusFlying},
+			want: "✈️ ABCDEF",
+		},
+		{
+			name: "landed unconfirmed",
+			id:   "FE0E4A",
+			info: &TrackInfo{Name: "Eugene", Status: StatusLanded},
+			want: "🪂 Eugene (FE0E4A)",
+		},
+		{
+			name: "landed confirmed",
+			id:   "FE0E4A",
+			info: &TrackInfo{Name: "Eugene", Status: StatusLanded, LandingConfirmed: true},
+			want: "✅ Eugene (FE0E4A)",
+		},
+		{
+			name: "picked up",
+			id:   "FE0E4A",
+			info: &TrackInfo{Name: "Eugene", Status: StatusPickedUp},
+			want: "✅ Eugene (FE0E4A)",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := pilotLabelText(c.id, c.info)
+			if got != c.want {
+				t.Errorf("pilotLabelText(%q, %+v) = %q, want %q", c.id, c.info, got, c.want)
+			}
+		})
+	}
+}
+
 func TestShouldAttemptPin(t *testing.T) {
 	cases := []struct {
 		name    string

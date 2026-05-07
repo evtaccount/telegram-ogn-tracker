@@ -52,6 +52,10 @@ type pilotState struct {
 	// LowSpeedSince preserves landing-detector progress across restarts. On
 	// load, values older than the staleness window are reset (see loadState).
 	LowSpeedSince time.Time `json:"low_speed_since,omitempty"`
+	// LabelMsgID and LabelStatus persist the text-label state so a restart
+	// keeps editing the same label instead of orphaning it next to a fresh one.
+	LabelMsgID  int         `json:"label_msg_id,omitempty"`
+	LabelStatus PilotStatus `json:"label_status,omitempty"`
 }
 
 // legacySessionState represents the old format (pre-Phase 1) for migration.
@@ -103,6 +107,8 @@ func (t *Tracker) marshalStateLocked() []byte {
 					OwnerUserID:      info.OwnerUserID,
 					MessageID:        info.MessageID,
 					LowSpeedSince:    info.LowSpeedSince,
+					LabelMsgID:       info.LabelMsgID,
+					LabelStatus:      info.LabelStatus,
 				}
 			}
 		}
@@ -289,6 +295,8 @@ func (t *Tracker) loadState() bool {
 				OwnerUserID:      ps.OwnerUserID,
 				MessageID:        ps.MessageID,
 				LowSpeedSince:    low,
+				LabelMsgID:       ps.LabelMsgID,
+				LabelStatus:      ps.LabelStatus,
 			}
 		}
 	}

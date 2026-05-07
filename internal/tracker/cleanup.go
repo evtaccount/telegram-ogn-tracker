@@ -13,6 +13,27 @@ import (
 // enough for the user to read the result, short enough to keep the chat tidy.
 const ephemeralDeleteDelay = 5 * time.Second
 
+// deleteMessagesAsync fires a single deleteMessages call in a goroutine — no
+// grace period. Used to clean up label / live-location messages that the
+// session is abandoning right now (pilot removed, tracking reset, session
+// wiped) so the chat doesn't carry stale "Eugene (FE0E4A)" cards once their
+// owner is gone. Best-effort: errors are logged at warn.
+func (t *Tracker) deleteMessagesAsync(chatID int64, msgIDs ...int) {
+	if t.bot == nil || len(msgIDs) == 0 {
+		return
+	}
+	b := t.bot
+	ids := append([]int(nil), msgIDs...)
+	go func() {
+		if _, err := b.DeleteMessages(context.Background(), &bot.DeleteMessagesParams{
+			ChatID:     chatID,
+			MessageIDs: ids,
+		}); err != nil {
+			slog.Warn("failed to delete orphaned messages", "chat_id", chatID, "ids", ids, "err", err)
+		}
+	}()
+}
+
 // scheduleEphemeralDelete fires a goroutine that sleeps for the grace period
 // and then issues a single deleteMessages call for the whole batch. Best-
 // effort: errors (missing perms, message already deleted by user) are logged

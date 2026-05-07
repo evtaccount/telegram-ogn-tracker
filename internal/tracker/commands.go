@@ -287,11 +287,25 @@ func (t *Tracker) cmdRemove(ctx context.Context, b *bot.Bot, update *models.Upda
 	t.mu.Lock()
 	s := t.session
 	s.ChatID = m.Chat.ID
+	// Capture the pilot's label + live-loc message IDs before deleting the
+	// entry so we can clean them out of the chat — otherwise they orphan
+	// until the 24h live-location TTL expires.
+	var orphanIDs []int
+	if info, ok := s.Tracking[id]; ok {
+		if info.LabelMsgID != 0 {
+			orphanIDs = append(orphanIDs, info.LabelMsgID)
+		}
+		if info.MessageID != 0 {
+			orphanIDs = append(orphanIDs, info.MessageID)
+		}
+	}
 	delete(s.Tracking, id)
 	t.updateFilter()
 	kb := s.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
+
+	t.deleteMessagesAsync(m.Chat.ID, orphanIDs...)
 
 	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 		ChatID:      m.Chat.ID,
