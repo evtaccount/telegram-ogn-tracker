@@ -9,6 +9,9 @@ services:
     container_name: ogn-tracker
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - DEBUG=${DEBUG:-}
+      - ALLOWED_CHATS=${ALLOWED_CHATS:-}
+      - LOG_FILE=${LOG_FILE:-}
     volumes:
       - ./data:/root/data
       - ./logs:/root/logs
