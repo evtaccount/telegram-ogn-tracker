@@ -35,6 +35,13 @@ type TrackInfo struct {
 	// Course=0 with non-zero speed (a known limitation of the data feed).
 	// Runtime-only; not persisted.
 	LastHeading int
+	// LabelMsgID is the Telegram message ID of the text "label" sent right
+	// before the live-location pin. The pin replies to this label so the chat
+	// shows "Eugene (FE0E4A)" above the otherwise-anonymous map preview.
+	LabelMsgID int
+	// LabelStatus is the PilotStatus reflected by the label's emoji on the
+	// last edit. Used to skip Telegram round-trips when nothing has changed.
+	LabelStatus PilotStatus
 }
 
 // StatusEmoji returns an emoji reflecting the pilot's current state.

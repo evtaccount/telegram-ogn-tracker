@@ -130,6 +130,21 @@ func commandArgs(text string) string {
 	return ""
 }
 
+// pilotLabelText builds the short caption shown above each pilot's
+// live-location pin. The status emoji is the same one used by the summary
+// (✈️ flying, 🪂 landed-unconfirmed, ✅ landed-confirmed / picked up). When a
+// human-friendly name is known we render "{emoji} {Name} ({id})"; otherwise
+// just "{emoji} {id}". The OGN ID is always present so the retriever can
+// cross-reference with /list output.
+func pilotLabelText(id string, info *TrackInfo) string {
+	emoji := info.StatusEmoji()
+	name := info.DisplayName()
+	if name == "" {
+		return emoji + " " + id
+	}
+	return fmt.Sprintf("%s %s (%s)", emoji, name, id)
+}
+
 // chooseHeading picks a heading value to send to Telegram for the live-location
 // arrow given the latest course, cached last-known heading and current ground speed.
 //
