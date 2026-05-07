@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	// Embed the IANA tzdata so /tz works on minimal images (alpine without tzdata pkg).
@@ -17,18 +20,50 @@ import (
 	"telegram-ogn-tracker/internal/tracker"
 )
 
+// defaultLogPath is the destination used when LOG_FILE is unset.
+// Resolved relative to the process's working directory; in Docker this
+// becomes /root/logs/bot.log which is mounted to ./logs/ on the host.
+const defaultLogPath = "logs/bot.log"
+
+// openLogSink resolves the log destination from LOG_FILE (default
+// `logs/bot.log`) and returns an io.Writer plus a one-line description.
+// On any failure it falls back to os.Stderr and prints the reason there
+// so the operator can spot the misconfiguration.
+func openLogSink() (io.Writer, string) {
+	path := os.Getenv("LOG_FILE")
+	if path == "" {
+		path = defaultLogPath
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "log: cannot create dir %s: %v; falling back to stderr\n", dir, err)
+			return os.Stderr, "stderr"
+		}
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "log: cannot open %s: %v; falling back to stderr\n", path, err)
+		return os.Stderr, "stderr"
+	}
+	return f, path
+}
+
 func main() {
-	// Structured logger: text handler for human-readable output in `docker logs`,
-	// with timestamps and levels. Pipe stdlib log through slog so any third-party
-	// code that uses log.Printf still goes through the same handler.
+	// Structured logger: text handler with timestamps and levels, written to a
+	// file so the bot doesn't pollute stdout/stderr. `tail -f logs/bot.log` to
+	// watch live. DEBUG=1 raises verbosity to include the OGN beacon trace.
 	level := slog.LevelInfo
 	if os.Getenv("DEBUG") == "1" {
 		level = slog.LevelDebug
 	}
-	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})
+	logOut, logDest := openLogSink()
+	handler := slog.NewTextHandler(logOut, &slog.HandlerOptions{Level: level})
 	slog.SetDefault(slog.New(handler))
+	// Pipe stdlib log through slog so any third-party code that uses log.Printf
+	// (notably the OGN client's logger field) ends up in the same structured stream.
 	log.SetFlags(0)
 	log.SetOutput(slog.NewLogLogger(handler, slog.LevelInfo).Writer())
+	slog.Info("logger initialised", "destination", logDest, "level", level.String())
 
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
 	if token == "" {
