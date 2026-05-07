@@ -33,6 +33,8 @@ type sessionState struct {
 	TrackArea       *Coordinates           `json:"track_area,omitempty"`
 	TrackAreaRadius int                    `json:"track_area_radius,omitempty"`
 	Timezone        string                 `json:"timezone,omitempty"`
+	SummaryMsgID    int                    `json:"summary_msg_id,omitempty"`
+	SummaryPinned   bool                   `json:"summary_pinned,omitempty"`
 }
 
 // pilotState is the JSON-serialisable snapshot of a tracked pilot.
@@ -82,6 +84,8 @@ func (t *Tracker) marshalStateLocked() []byte {
 			Landing:         s.Landing,
 			TrackArea:       s.TrackArea,
 			TrackAreaRadius: s.TrackAreaRadius,
+			SummaryMsgID:    s.SummaryMsgID,
+			SummaryPinned:   s.SummaryPinned,
 		}
 		if s.Timezone != nil {
 			ss.Timezone = s.Timezone.String()
@@ -258,6 +262,8 @@ func (t *Tracker) loadState() bool {
 		TrackArea:       ss.TrackArea,
 		TrackAreaRadius: ss.TrackAreaRadius,
 		Drivers:         make(map[int64]*DriverInfo),
+		SummaryMsgID:    ss.SummaryMsgID,
+		SummaryPinned:   ss.SummaryPinned,
 	}
 	if ss.Timezone != "" {
 		if loc, err := time.LoadLocation(ss.Timezone); err == nil {

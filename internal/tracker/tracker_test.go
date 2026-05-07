@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -328,6 +329,62 @@ func TestSaveStateAsync(t *testing.T) {
 		case <-tr.saveCh:
 			t.Fatal("expected no snapshot once shuttingDown is set")
 		default:
+		}
+	})
+}
+
+func TestSummaryPinPersistence(t *testing.T) {
+	// Round-trip a session with summary pin metadata through marshalStateLocked
+	// and back via json.Unmarshal to confirm both fields survive a save/load.
+	tr := &Tracker{
+		users:    make(map[int64]*UserInfo),
+		saveCh:   make(chan []byte, 1),
+		saveDone: make(chan struct{}),
+		session: &GroupSession{
+			ChatID:        -100200,
+			Tracking:      map[string]*TrackInfo{},
+			SummaryMsgID:  12345,
+			SummaryPinned: true,
+		},
+	}
+
+	tr.mu.Lock()
+	data := tr.marshalStateLocked()
+	tr.mu.Unlock()
+	if len(data) == 0 {
+		t.Fatal("expected non-empty snapshot")
+	}
+
+	var roundtrip appState
+	if err := json.Unmarshal(data, &roundtrip); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if roundtrip.Session == nil {
+		t.Fatal("expected session to round-trip")
+	}
+	if roundtrip.Session.SummaryMsgID != 12345 {
+		t.Errorf("SummaryMsgID = %d, want 12345", roundtrip.Session.SummaryMsgID)
+	}
+	if !roundtrip.Session.SummaryPinned {
+		t.Errorf("SummaryPinned = false, want true")
+	}
+
+	t.Run("zero values omit from JSON", func(t *testing.T) {
+		tr2 := &Tracker{
+			users:    make(map[int64]*UserInfo),
+			saveCh:   make(chan []byte, 1),
+			saveDone: make(chan struct{}),
+			session: &GroupSession{
+				ChatID:   -100200,
+				Tracking: map[string]*TrackInfo{},
+			},
+		}
+		tr2.mu.Lock()
+		data2 := tr2.marshalStateLocked()
+		tr2.mu.Unlock()
+		s := string(data2)
+		if strings.Contains(s, "summary_msg_id") || strings.Contains(s, "summary_pinned") {
+			t.Errorf("expected omitempty to drop zero fields, got: %s", s)
 		}
 	})
 }
