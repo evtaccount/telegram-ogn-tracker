@@ -141,8 +141,12 @@ func (t *Tracker) stopTrackingAsync() {
 	if s == nil || !s.TrackingOn {
 		return
 	}
+	chatID := s.ChatID
+	oldSummaryID := s.SummaryMsgID
+	wasPinned := s.SummaryPinned
 	s.TrackingOn = false
 	s.SummaryMsgID = 0
+	s.SummaryPinned = false
 	stopCh := s.StopCh
 	s.StopCh = nil
 	aprs := t.aprs
@@ -151,6 +155,28 @@ func (t *Tracker) stopTrackingAsync() {
 			close(stopCh)
 		}
 		_ = aprs.Disconnect()
+	}()
+	if wasPinned {
+		t.unpinSummaryAsync(chatID, oldSummaryID)
+	}
+}
+
+// unpinSummaryAsync fires a best-effort UnpinChatMessage in a goroutine so the
+// caller (which typically holds t.mu) doesn't block on a Telegram round-trip
+// or risk a deadlock with the bot's update path. No-ops when there's nothing
+// to unpin or the bot isn't wired yet.
+func (t *Tracker) unpinSummaryAsync(chatID int64, msgID int) {
+	if msgID == 0 || t.bot == nil {
+		return
+	}
+	b := t.bot
+	go func() {
+		if _, err := b.UnpinChatMessage(context.Background(), &bot.UnpinChatMessageParams{
+			ChatID:    chatID,
+			MessageID: msgID,
+		}); err != nil {
+			slog.Warn("failed to unpin summary", "err", err)
+		}
 	}()
 }
 

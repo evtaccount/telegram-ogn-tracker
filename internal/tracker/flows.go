@@ -335,7 +335,13 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 		info.Position = nil
 		info.LastUpdate = time.Time{}
 	}
+	// Drop the previous summary's pin (if any) before clearing its ID so the
+	// next tick sends a fresh summary and re-pins it. Unpin is fired async
+	// outside the lock to avoid blocking on a Telegram round-trip.
+	oldSummaryID := s.SummaryMsgID
+	wasPinned := s.SummaryPinned
 	s.SummaryMsgID = 0
+	s.SummaryPinned = false
 	s.ChatID = chatID
 	// Set filter before enabling tracking so updateFilter doesn't restart goroutines.
 	t.updateFilter()
@@ -351,6 +357,10 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	count := len(s.Tracking)
 	hasArea := s.TrackArea != nil
 	t.mu.Unlock()
+
+	if wasPinned {
+		t.unpinSummaryAsync(chatID, oldSummaryID)
+	}
 
 	slog.Info("tracking on", "pilots", count, "area", hasArea, "chat_id", chatID)
 	go t.runClient(stopCh, aprs)
