@@ -108,6 +108,12 @@ type GroupSession struct {
 	DMLandingExpiry     time.Time
 	WaitingArea         bool
 	AreaExpiry          time.Time
+	// PendingCleanup tracks transient group-message IDs that should be
+	// deleted in one batch when the user's currently-active flow concludes.
+	// Keyed by Telegram user ID. Used only for multi-step flows (/add no-arg,
+	// /track_off confirm, /session_reset confirm, /landing). Runtime-only,
+	// not persisted — bot restart drops pending batches.
+	PendingCleanup map[int64][]int
 	// Radar mode (runtime only):
 	RadarOn            bool
 	RadarRadius        int // radar-specific radius (may differ from TrackAreaRadius)
