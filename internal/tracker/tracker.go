@@ -418,7 +418,9 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			if !t.requireSession(ctx, b, chatID) {
 				break
 			}
-			t.execTrackOn(ctx, b, chatID)
+			if ackID := t.execTrackOn(ctx, b, chatID); ackID != 0 {
+				t.scheduleEphemeralDelete(chatID, m.ID, ackID)
+			}
 		case "⏹ Стоп":
 			if t.requireSession(ctx, b, chatID) {
 				t.askTrackOffConfirm(ctx, b, chatID)
@@ -433,7 +435,9 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			}
 		case "📡 Зона ✕":
 			if t.requireSession(ctx, b, chatID) {
-				t.execAreaOff(ctx, b, chatID)
+				if ackID := t.execAreaOff(ctx, b, chatID); ackID != 0 {
+					t.scheduleEphemeralDelete(chatID, m.ID, ackID)
+				}
 			}
 		case "🚗 Водитель":
 			if t.requireSession(ctx, b, chatID) {
@@ -441,11 +445,15 @@ func (t *Tracker) DefaultHandler(ctx context.Context, b *bot.Bot, update *models
 			}
 		case "📡 Радар":
 			if t.requireSession(ctx, b, chatID) {
-				t.execRadarOn(ctx, b, chatID, 0)
+				if ackID := t.execRadarOn(ctx, b, chatID, 0); ackID != 0 {
+					t.scheduleEphemeralDelete(chatID, m.ID, ackID)
+				}
 			}
 		case "⏹ Радар стоп":
 			if t.requireSession(ctx, b, chatID) {
-				t.execRadarOff(ctx, b, chatID)
+				if ackID := t.execRadarOff(ctx, b, chatID); ackID != 0 {
+					t.scheduleEphemeralDelete(chatID, m.ID, ackID)
+				}
 			}
 		case "📡 Радиус":
 			if t.requireSession(ctx, b, chatID) {

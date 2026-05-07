@@ -112,13 +112,11 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	t.saveState()
 	t.mu.Unlock()
 
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 		ChatID:      m.Chat.ID,
 		Text:        "Сессия начата. Используйте /add <id> или /area.",
 		ReplyMarkup: kb,
-	}); err != nil {
-		slog.Error("failed to send start message", "err", err)
-	}
+	}, "failed to send start message")
 }
 
 // cmdStartSession unconditionally creates a fresh session in the current group
@@ -148,13 +146,11 @@ func (t *Tracker) cmdStartSession(ctx context.Context, b *bot.Bot, update *model
 	t.saveState()
 	t.mu.Unlock()
 
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 		ChatID:      m.Chat.ID,
 		Text:        "Сессия пересоздана. Все пилоты удалены. Используйте /add <id> или /area.",
 		ReplyMarkup: kb,
-	}); err != nil {
-		slog.Error("failed to send start_session message", "err", err)
-	}
+	}, "failed to send start_session message")
 }
 
 func (t *Tracker) cmdSessionReset(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -176,6 +172,7 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 
 	// /add only works in groups.
 	if isPrivateChat(m.Chat) {
+		// DM ack stays — DMs are personal history, never auto-deleted.
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: m.Chat.ID,
 			Text:   "Эта команда работает только в группе.",
@@ -193,7 +190,9 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 
 	// /add with arguments: direct add (existing behavior).
 	if len(args) > 0 {
-		t.execAddDirect(ctx, b, m, args)
+		if ackID := t.execAddDirect(ctx, b, m, args); ackID != 0 {
+			t.scheduleEphemeralDelete(m.Chat.ID, m.ID, ackID)
+		}
 		return
 	}
 
@@ -268,12 +267,10 @@ func (t *Tracker) cmdRemove(ctx context.Context, b *bot.Bot, update *models.Upda
 
 	args := commandArgs(m.Text)
 	if args == "" {
-		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 			ChatID: m.Chat.ID,
 			Text:   "Использование: /remove <ogn_id>",
-		}); err != nil {
-			slog.Error("failed to send usage", "err", err)
-		}
+		}, "failed to send usage")
 		return
 	}
 	id := shortID(args)
@@ -288,13 +285,11 @@ func (t *Tracker) cmdRemove(ctx context.Context, b *bot.Bot, update *models.Upda
 	t.saveState()
 	t.mu.Unlock()
 
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 		ChatID:      m.Chat.ID,
 		Text:        "Удалён " + id,
 		ReplyMarkup: kb,
-	}); err != nil {
-		slog.Error("failed to confirm remove", "err", err)
-	}
+	}, "failed to confirm remove")
 }
 
 func (t *Tracker) cmdTrackOn(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -305,7 +300,9 @@ func (t *Tracker) cmdTrackOn(ctx context.Context, b *bot.Bot, update *models.Upd
 	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
-	t.execTrackOn(ctx, b, m.Chat.ID)
+	if ackID := t.execTrackOn(ctx, b, m.Chat.ID); ackID != 0 {
+		t.scheduleEphemeralDelete(m.Chat.ID, m.ID, ackID)
+	}
 }
 
 func (t *Tracker) cmdTrackOff(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -389,23 +386,19 @@ func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) 
 		t.mu.Lock()
 		cur := t.tz().String()
 		t.mu.Unlock()
-		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 			ChatID: m.Chat.ID,
 			Text:   fmt.Sprintf("Часовой пояс: %s\nИспользование: /tz Europe/Kyiv", cur),
-		}); err != nil {
-			slog.Error("failed to send tz usage", "err", err)
-		}
+		}, "failed to send tz usage")
 		return
 	}
 
 	loc, err := time.LoadLocation(arg)
 	if err != nil {
-		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 			ChatID: m.Chat.ID,
 			Text:   "Неизвестный часовой пояс. Используйте формат IANA, например: Europe/Kyiv, America/New_York, Asia/Tokyo",
-		}); err != nil {
-			slog.Error("failed to send tz error", "err", err)
-		}
+		}, "failed to send tz error")
 		return
 	}
 
@@ -416,12 +409,10 @@ func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) 
 	slog.Info("timezone set", "tz", loc.String())
 
 	now := time.Now().In(loc).Format("15:04:05")
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 		ChatID: m.Chat.ID,
 		Text:   fmt.Sprintf("Часовой пояс: %s (сейчас: %s)", loc.String(), now),
-	}); err != nil {
-		slog.Error("failed to confirm tz", "err", err)
-	}
+	}, "failed to confirm tz")
 }
 
 func (t *Tracker) cmdHelp(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -479,15 +470,13 @@ func (t *Tracker) cmdDebugWipe(ctx context.Context, b *bot.Bot, update *models.U
 	t.saveState()
 	t.mu.Unlock()
 
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 		ChatID: m.Chat.ID,
 		Text:   "Все данные бота полностью очищены.",
 		ReplyMarkup: &models.ReplyKeyboardRemove{
 			RemoveKeyboard: true,
 		},
-	}); err != nil {
-		slog.Error("failed to send wipe confirmation", "err", err)
-	}
+	}, "failed to send wipe confirmation")
 }
 
 func (t *Tracker) cmdDriver(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -509,7 +498,9 @@ func (t *Tracker) cmdDriverOff(ctx context.Context, b *bot.Bot, update *models.U
 	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
-	t.execDriverOff(ctx, b, m.Chat.ID, m.From.ID)
+	if ackID := t.execDriverOff(ctx, b, m.Chat.ID, m.From.ID); ackID != 0 {
+		t.scheduleEphemeralDelete(m.Chat.ID, m.ID, ackID)
+	}
 }
 
 func (t *Tracker) cmdArea(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -537,7 +528,9 @@ func (t *Tracker) cmdAreaOff(ctx context.Context, b *bot.Bot, update *models.Upd
 	if !t.requireGroupSession(ctx, b, m) {
 		return
 	}
-	t.execAreaOff(ctx, b, m.Chat.ID)
+	if ackID := t.execAreaOff(ctx, b, m.Chat.ID); ackID != 0 {
+		t.scheduleEphemeralDelete(m.Chat.ID, m.ID, ackID)
+	}
 }
 
 func (t *Tracker) cmdRadar(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -552,21 +545,17 @@ func (t *Tracker) cmdRadar(ctx context.Context, b *bot.Bot, update *models.Updat
 	if arg := commandArgs(m.Text); arg != "" {
 		r, err := strconv.Atoi(arg)
 		if err != nil {
-			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 				ChatID: m.Chat.ID,
 				Text:   fmt.Sprintf("Неверный радиус. Используйте /radar <число> (1–%d)", maxAreaRadius),
-			}); err != nil {
-				slog.Error("failed to send invalid radar arg message", "err", err)
-			}
+			}, "failed to send invalid radar arg message")
 			return
 		}
 		if r <= 0 || r > maxAreaRadius {
-			if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 				ChatID: m.Chat.ID,
 				Text:   fmt.Sprintf("Радиус должен быть от 1 до %d км", maxAreaRadius),
-			}); err != nil {
-				slog.Error("failed to send radar range message", "err", err)
-			}
+			}, "failed to send radar range message")
 			return
 		}
 		radius = r
@@ -576,8 +565,12 @@ func (t *Tracker) cmdRadar(ctx context.Context, b *bot.Bot, update *models.Updat
 	radarOn := t.session != nil && t.session.RadarOn
 	t.mu.Unlock()
 	if radarOn && radius > 0 {
-		t.execRadarSetRadius(ctx, b, m.Chat.ID, radius)
+		if ackID := t.execRadarSetRadius(ctx, b, m.Chat.ID, radius); ackID != 0 {
+			t.scheduleEphemeralDelete(m.Chat.ID, m.ID, ackID)
+		}
 		return
 	}
-	t.execRadarOn(ctx, b, m.Chat.ID, radius)
+	if ackID := t.execRadarOn(ctx, b, m.Chat.ID, radius); ackID != 0 {
+		t.scheduleEphemeralDelete(m.Chat.ID, m.ID, ackID)
+	}
 }

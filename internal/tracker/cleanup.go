@@ -82,3 +82,36 @@ func (t *Tracker) forgetPendingCleanup(userID int64) {
 	t.drainPendingCleanup(userID)
 	t.mu.Unlock()
 }
+
+// sendAck sends a Telegram message and returns its ID. errLabel is logged on
+// failure. Returns 0 if the bot is unset or the send failed.
+//
+// Used by exec'es that may be invoked from multiple callsites (direct
+// command, button press, callback) — each callsite then decides how to
+// handle the resulting ID (single-step schedule, queue append, finalize).
+func (t *Tracker) sendAck(ctx context.Context, params *bot.SendMessageParams, errLabel string) int {
+	if t.bot == nil {
+		return 0
+	}
+	msg, err := t.bot.SendMessage(ctx, params)
+	if err != nil {
+		slog.Error(errLabel, "err", err)
+		return 0
+	}
+	return msg.ID
+}
+
+// scheduleAck is the single-step convenience wrapper: send an ack message
+// and, on success, schedule both it and the triggering user message for
+// ephemeral deletion after the grace period. Returns the ack message ID for
+// chaining (0 on failure).
+//
+// Pass userMsgID == 0 to skip cleanup scheduling — useful for info-only acks
+// that should remain visible.
+func (t *Tracker) scheduleAck(ctx context.Context, chatID int64, userMsgID int, params *bot.SendMessageParams, errLabel string) int {
+	ackID := t.sendAck(ctx, params, errLabel)
+	if ackID != 0 && userMsgID != 0 {
+		t.scheduleEphemeralDelete(chatID, userMsgID, ackID)
+	}
+	return ackID
+}

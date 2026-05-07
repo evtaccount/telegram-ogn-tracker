@@ -17,16 +17,13 @@ import (
 // execAddDirect adds a pilot by OGN ID directly from /add <id> [name] [@username] in a group.
 // If @username is provided, the bot links the pilot to that Telegram user for DM features.
 // If only a name is provided without @username, the bot cannot send DM to the pilot.
-func (t *Tracker) execAddDirect(ctx context.Context, b *bot.Bot, m *models.Message, args []string) {
+func (t *Tracker) execAddDirect(ctx context.Context, b *bot.Bot, m *models.Message, args []string) int {
 	id := shortID(args[0])
 	if !isValidShortID(id) {
-		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		return t.sendAck(ctx, &bot.SendMessageParams{
 			ChatID: m.Chat.ID,
 			Text:   fmt.Sprintf("OGN ID %q некорректен. Ожидаются 6 hex-символов (0-9, A-F).", args[0]),
-		}); err != nil {
-			slog.Error("failed to send invalid ognid message", "err", err)
-		}
-		return
+		}, "failed to send invalid ognid message")
 	}
 
 	// Parse remaining args: name tokens and optional @username.
@@ -100,13 +97,11 @@ func (t *Tracker) execAddDirect(ctx context.Context, b *bot.Bot, m *models.Messa
 	}
 	text += ddbInfo
 
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	return t.sendAck(ctx, &bot.SendMessageParams{
 		ChatID:      m.Chat.ID,
 		Text:        text,
 		ReplyMarkup: kb,
-	}); err != nil {
-		slog.Error("failed to confirm add", "err", err)
-	}
+	}, "failed to confirm add")
 }
 
 // askSessionResetConfirm shows the inline confirm/wipe/cancel dialog for /session_reset.
@@ -290,41 +285,33 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 }
 
 // execTrackOn starts live tracking: resets pilot statuses, connects to OGN APRS,
-// and launches the client + update goroutines.
-func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
+// and launches the client + update goroutines. Returns the ID of the ack
+// message sent (whichever branch was taken) so callers can schedule cleanup.
+func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) int {
 	t.mu.Lock()
 	s := t.session
 	if len(s.Tracking) == 0 && s.TrackArea == nil {
 		t.mu.Unlock()
-		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		return t.sendAck(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
 			Text:   "Нет адресов. Используйте /add <id> или /area.",
-		}); err != nil {
-			slog.Error("failed to send no addresses message", "err", err)
-		}
-		return
+		}, "failed to send no addresses message")
 	}
 	if s.RadarOn {
 		t.mu.Unlock()
-		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		return t.sendAck(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
 			Text:   "Остановите радар перед запуском трекинга.",
-		}); err != nil {
-			slog.Error("failed to send radar conflict message", "err", err)
-		}
-		return
+		}, "failed to send radar conflict message")
 	}
 	if s.TrackingOn {
 		kb := s.replyKeyboard()
 		t.mu.Unlock()
-		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		return t.sendAck(ctx, &bot.SendMessageParams{
 			ChatID:      chatID,
 			Text:        "Трекинг уже включён",
 			ReplyMarkup: kb,
-		}); err != nil {
-			slog.Error("failed to confirm track_on", "err", err)
-		}
-		return
+		}, "failed to confirm track_on")
 	}
 	// Reset pilot statuses for a fresh tracking session.
 	for _, info := range s.Tracking {
@@ -366,13 +353,11 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) {
 	go t.runClient(stopCh, aprs)
 	go t.sendUpdates(stopCh)
 
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	return t.sendAck(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        "Трекинг включён",
 		ReplyMarkup: kb,
-	}); err != nil {
-		slog.Error("failed to confirm track_on", "err", err)
-	}
+	}, "failed to confirm track_on")
 }
 
 // askStartChoice shows inline buttons to resume with existing pilots or start fresh.
@@ -542,7 +527,7 @@ func (t *Tracker) execArea(ctx context.Context, b *bot.Bot, chatID int64, radius
 	}
 }
 
-func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) {
+func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) int {
 	slog.Info("area off", "chat_id", chatID)
 	t.mu.Lock()
 	s := t.session
@@ -565,51 +550,40 @@ func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.saveState()
 	t.mu.Unlock()
 
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	return t.sendAck(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        "📡 Зона отключена",
 		ReplyMarkup: kb,
-	}); err != nil {
-		slog.Error("failed to confirm area off", "err", err)
-	}
+	}, "failed to confirm area off")
 }
 
 // --- Radar mode flows ---
 
-func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64, radiusKm int) {
+func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64, radiusKm int) int {
 	t.mu.Lock()
 	s := t.session
 	if s.TrackArea == nil {
 		t.mu.Unlock()
-		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		return t.sendAck(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
 			Text:   "Сначала задайте зону: /area",
-		}); err != nil {
-			slog.Error("failed to send radar no-area message", "err", err)
-		}
-		return
+		}, "failed to send radar no-area message")
 	}
 	if s.TrackingOn {
 		t.mu.Unlock()
-		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		return t.sendAck(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
 			Text:   "Остановите трекинг перед включением радара.",
-		}); err != nil {
-			slog.Error("failed to send radar conflict message", "err", err)
-		}
-		return
+		}, "failed to send radar conflict message")
 	}
 	if s.RadarOn {
 		kb := s.replyKeyboard()
 		t.mu.Unlock()
-		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		return t.sendAck(ctx, &bot.SendMessageParams{
 			ChatID:      chatID,
 			Text:        "Радар уже включён",
 			ReplyMarkup: kb,
-		}); err != nil {
-			slog.Error("failed to confirm radar on", "err", err)
-		}
-		return
+		}, "failed to confirm radar on")
 	}
 
 	// Use provided radius, fall back to area radius, then default.
@@ -642,21 +616,19 @@ func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64, rad
 	go t.runRadarClient(stopCh, aprs)
 	go t.sendRadarUpdates(stopCh)
 
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	return t.sendAck(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        fmt.Sprintf("📡 Радар включён (зона %dкм)", radiusKm),
 		ReplyMarkup: kb,
-	}); err != nil {
-		slog.Error("failed to confirm radar on", "err", err)
-	}
+	}, "failed to confirm radar on")
 }
 
-func (t *Tracker) execRadarOff(ctx context.Context, b *bot.Bot, chatID int64) {
+func (t *Tracker) execRadarOff(ctx context.Context, b *bot.Bot, chatID int64) int {
 	t.mu.Lock()
 	s := t.session
 	if !s.RadarOn {
 		t.mu.Unlock()
-		return
+		return 0
 	}
 	t.stopRadarAsync()
 	t.aprs = client.New("N0CALL", "")
@@ -665,13 +637,11 @@ func (t *Tracker) execRadarOff(ctx context.Context, b *bot.Bot, chatID int64) {
 	t.mu.Unlock()
 
 	slog.Info("radar off", "chat_id", chatID)
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	return t.sendAck(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        "📡 Радар выключен",
 		ReplyMarkup: kb,
-	}); err != nil {
-		slog.Error("failed to confirm radar off", "err", err)
-	}
+	}, "failed to confirm radar off")
 }
 
 // execRadarAskRadius prompts the user to enter a new radius for radar mode.
@@ -695,7 +665,7 @@ func (t *Tracker) execRadarAskRadius(ctx context.Context, b *bot.Bot, chatID int
 }
 
 // execRadarSetRadius changes the radar radius while radar is running.
-func (t *Tracker) execRadarSetRadius(ctx context.Context, b *bot.Bot, chatID int64, radiusKm int) {
+func (t *Tracker) execRadarSetRadius(ctx context.Context, b *bot.Bot, chatID int64, radiusKm int) int {
 	if radiusKm <= 0 {
 		radiusKm = defaultAreaRadius
 	}
@@ -706,7 +676,7 @@ func (t *Tracker) execRadarSetRadius(ctx context.Context, b *bot.Bot, chatID int
 	s := t.session
 	if s == nil || !s.RadarOn {
 		t.mu.Unlock()
-		return
+		return 0
 	}
 	t.stopRadarAsync()
 
@@ -728,13 +698,11 @@ func (t *Tracker) execRadarSetRadius(ctx context.Context, b *bot.Bot, chatID int
 	go t.runRadarClient(stopCh, aprs)
 	go t.sendRadarUpdates(stopCh)
 
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	return t.sendAck(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        fmt.Sprintf("📡 Радиус радара: %dкм", radiusKm),
 		ReplyMarkup: kb,
-	}); err != nil {
-		slog.Error("failed to confirm radar radius", "err", err)
-	}
+	}, "failed to confirm radar radius")
 }
 
 // --- Driver flow ---
@@ -838,7 +806,7 @@ func (t *Tracker) driverWaitTimeout(gen int, userID int64, chatID int64, usernam
 	slog.Info("driver wait timed out", "user_id", userID)
 }
 
-func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, userID int64) {
+func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, userID int64) int {
 	slog.Info("driver off", "user_id", userID)
 	t.mu.Lock()
 	s := t.session
@@ -851,13 +819,11 @@ func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, u
 	if was {
 		text = "🚗 Водитель отключён"
 	}
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	return t.sendAck(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        text,
 		ReplyMarkup: kb,
-	}); err != nil {
-		slog.Error("failed to confirm driver off", "err", err)
-	}
+	}, "failed to confirm driver off")
 }
 
 // execPickup marks a pilot as picked up (StatusPickedUp) and confirms in the group.
