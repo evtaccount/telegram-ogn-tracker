@@ -1057,3 +1057,24 @@ func TestDashboardButtons(t *testing.T) {
 		}
 	})
 }
+
+func TestSessionResetClearsDashboard(t *testing.T) {
+	tr := &Tracker{
+		users: make(map[int64]*UserInfo),
+		session: &GroupSession{
+			ChatID:          -100,
+			Tracking:        map[string]*TrackInfo{},
+			DashboardMsgID:  77,
+			DashboardPinned: true,
+		},
+	}
+	tr.mu.Lock()
+	tr.clearDashboardForReset()
+	if tr.session.DashboardMsgID != 0 {
+		t.Errorf("DashboardMsgID = %d, want 0", tr.session.DashboardMsgID)
+	}
+	if tr.session.DashboardPinned {
+		t.Errorf("DashboardPinned should be false after reset")
+	}
+	tr.mu.Unlock()
+}

@@ -280,6 +280,7 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 			}
 		}
 	}
+	t.clearDashboardForReset()
 	t.session = newSession
 	t.updateFilter()
 	t.saveState()
@@ -297,7 +298,6 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 		ReplyMarkup: removeReplyKB,
 	}, "failed to send session_reset message")
 
-	t.refreshDashboard(ctx, chatID)
 	return ackID
 }
 

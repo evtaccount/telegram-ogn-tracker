@@ -414,6 +414,23 @@ func (t *Tracker) stopTrackingAsync() {
 	}
 }
 
+// clearDashboardForReset deletes the pinned dashboard message and resets the
+// session's dashboard bookkeeping. Caller must hold t.mu. Telegram deletion
+// runs in a detached goroutine so the caller can stay under the lock.
+func (t *Tracker) clearDashboardForReset() {
+	s := t.session
+	if s == nil {
+		return
+	}
+	msgID := s.DashboardMsgID
+	chatID := s.ChatID
+	s.DashboardMsgID = 0
+	s.DashboardPinned = false
+	if msgID != 0 {
+		t.deleteMessagesAsync(chatID, msgID)
+	}
+}
+
 // unpinSummaryAsync fires a best-effort UnpinChatMessage in a goroutine so the
 // caller (which typically holds t.mu) doesn't block on a Telegram round-trip
 // or risk a deadlock with the bot's update path. No-ops when there's nothing
