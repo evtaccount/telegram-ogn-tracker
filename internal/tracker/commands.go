@@ -196,7 +196,13 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 		return
 	}
 
-	// /add without arguments: initiate DM flow.
+	// /add without arguments: initiate DM flow. Refresh the user record from
+	// the live Telegram message first so the display name / username we
+	// captured earlier (or never captured) stay current — execAddNoArgsPrompt
+	// itself only knows the userID and can't refresh those fields.
+	t.mu.Lock()
+	t.ensureUser(m.From)
+	t.mu.Unlock()
 	ackID := t.execAddNoArgsPrompt(ctx, b, m.Chat.ID, m.From.ID)
 	if ackID != 0 {
 		t.mu.Lock()
