@@ -245,11 +245,11 @@ func (t *Tracker) stopTrackingAsync() {
 		return
 	}
 	chatID := s.ChatID
-	oldSummaryID := s.SummaryMsgID
-	wasPinned := s.SummaryPinned
+	oldSummaryID := s.DashboardMsgID
+	wasPinned := s.DashboardPinned
 	s.TrackingOn = false
-	s.SummaryMsgID = 0
-	s.SummaryPinned = false
+	s.DashboardMsgID = 0
+	s.DashboardPinned = false
 	stopCh := s.StopCh
 	s.StopCh = nil
 	aprs := t.aprs
@@ -501,8 +501,8 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			areaRadius = s.TrackAreaRadius
 		}
 		b := t.bot
-		summaryMsgID := s.SummaryMsgID
-		summaryPinned := s.SummaryPinned
+		dashboardMsgID := s.DashboardMsgID
+		dashboardPinned := s.DashboardPinned
 		local := make(map[string]*TrackInfo)
 		for id, info := range s.Tracking {
 			cp := *info
@@ -708,10 +708,10 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		summary := buildSummary(local, landing, drivers, areaRadius, devices, tz)
 		kb := pilotButtons(local)
 		newSummaryID := 0
-		if summaryMsgID != 0 {
+		if dashboardMsgID != 0 {
 			editParams := &bot.EditMessageTextParams{
 				ChatID:    chatID,
-				MessageID: summaryMsgID,
+				MessageID: dashboardMsgID,
 				Text:      summary,
 			}
 			if kb != nil {
@@ -720,26 +720,26 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			_, err := b.EditMessageText(ctx, editParams)
 			switch {
 			case err == nil, isMessageNotModified(err):
-				newSummaryID = summaryMsgID
+				newSummaryID = dashboardMsgID
 			case isMessageGone(err):
 				// The summary message is gone (deleted, edit window closed).
 				// Clear the cached ID so the block below re-sends a fresh one
 				// on this same tick — the group needs an up-to-date summary.
-				slog.Warn("summary gone, will repost", "msg_id", summaryMsgID, "err", err)
+				slog.Warn("summary gone, will repost", "msg_id", dashboardMsgID, "err", err)
 				t.mu.Lock()
 				if t.session != nil {
-					t.session.SummaryMsgID = 0
-					t.session.SummaryPinned = false
+					t.session.DashboardMsgID = 0
+					t.session.DashboardPinned = false
 				}
 				t.mu.Unlock()
-				summaryMsgID = 0
+				dashboardMsgID = 0
 			default:
 				slog.Error("failed to edit summary", "err", err)
 				// Transient — keep the ID, next tick retries.
-				newSummaryID = summaryMsgID
+				newSummaryID = dashboardMsgID
 			}
 		}
-		if summaryMsgID == 0 {
+		if dashboardMsgID == 0 {
 			sendParams := &bot.SendMessageParams{
 				ChatID: chatID,
 				Text:   summary,
@@ -754,7 +754,7 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 				newSummaryID = msg.ID
 				t.mu.Lock()
 				if t.session != nil {
-					t.session.SummaryMsgID = msg.ID
+					t.session.DashboardMsgID = msg.ID
 				}
 				t.mu.Unlock()
 			}
@@ -763,10 +763,10 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 		// Pin the summary so it stays visible regardless of new chat traffic
 		// or freshly-sent live-location pins. Silent pin (DisableNotification)
 		// suppresses both the push and the "Bot pinned a message" service
-		// message. Failures (e.g. missing admin rights) leave SummaryPinned
+		// message. Failures (e.g. missing admin rights) leave DashboardPinned
 		// false so the next tick retries; once pinned, the snapshot path
 		// short-circuits forever.
-		if newSummaryID != 0 && shouldAttemptPin(summaryPinned, withPos) {
+		if newSummaryID != 0 && shouldAttemptPin(dashboardPinned, withPos) {
 			if _, err := b.PinChatMessage(ctx, &bot.PinChatMessageParams{
 				ChatID:              chatID,
 				MessageID:           newSummaryID,
@@ -776,8 +776,8 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			} else {
 				slog.Info("summary pinned", "msg_id", newSummaryID)
 				t.mu.Lock()
-				if t.session != nil && t.session.SummaryMsgID == newSummaryID {
-					t.session.SummaryPinned = true
+				if t.session != nil && t.session.DashboardMsgID == newSummaryID {
+					t.session.DashboardPinned = true
 					t.saveState()
 				}
 				t.mu.Unlock()

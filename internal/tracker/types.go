@@ -112,11 +112,11 @@ type GroupSession struct {
 	TrackAreaRadius int
 	Timezone        *time.Location
 	Drivers         map[int64]*DriverInfo
-	SummaryMsgID    int
-	// SummaryPinned is true once PinChatMessage succeeded for the current
-	// SummaryMsgID. Persisted so a restart doesn't re-pin (and re-notify) an
+	DashboardMsgID    int
+	// DashboardPinned is true once PinChatMessage succeeded for the current
+	// DashboardMsgID. Persisted so a restart doesn't re-pin (and re-notify) an
 	// already-pinned message.
-	SummaryPinned bool
+	DashboardPinned bool
 	// Runtime (not persisted):
 	StopCh         chan struct{}
 	WaitingLanding bool

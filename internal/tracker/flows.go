@@ -361,10 +361,10 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) int
 	// Drop the previous summary's pin (if any) before clearing its ID so the
 	// next tick sends a fresh summary and re-pins it. Unpin is fired async
 	// outside the lock to avoid blocking on a Telegram round-trip.
-	oldSummaryID := s.SummaryMsgID
-	wasPinned := s.SummaryPinned
-	s.SummaryMsgID = 0
-	s.SummaryPinned = false
+	oldSummaryID := s.DashboardMsgID
+	wasPinned := s.DashboardPinned
+	s.DashboardMsgID = 0
+	s.DashboardPinned = false
 	s.ChatID = chatID
 	// Set filter before enabling tracking so updateFilter doesn't restart goroutines.
 	t.updateFilter()

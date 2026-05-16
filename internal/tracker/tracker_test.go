@@ -342,10 +342,10 @@ func TestSummaryPinPersistence(t *testing.T) {
 		saveCh:   make(chan []byte, 1),
 		saveDone: make(chan struct{}),
 		session: &GroupSession{
-			ChatID:        -100200,
-			Tracking:      map[string]*TrackInfo{},
-			SummaryMsgID:  12345,
-			SummaryPinned: true,
+			ChatID:          -100200,
+			Tracking:        map[string]*TrackInfo{},
+			DashboardMsgID:  12345,
+			DashboardPinned: true,
 		},
 	}
 
@@ -363,11 +363,11 @@ func TestSummaryPinPersistence(t *testing.T) {
 	if roundtrip.Session == nil {
 		t.Fatal("expected session to round-trip")
 	}
-	if roundtrip.Session.SummaryMsgID != 12345 {
-		t.Errorf("SummaryMsgID = %d, want 12345", roundtrip.Session.SummaryMsgID)
+	if roundtrip.Session.DashboardMsgID != 12345 {
+		t.Errorf("DashboardMsgID = %d, want 12345", roundtrip.Session.DashboardMsgID)
 	}
-	if !roundtrip.Session.SummaryPinned {
-		t.Errorf("SummaryPinned = false, want true")
+	if !roundtrip.Session.DashboardPinned {
+		t.Errorf("DashboardPinned = false, want true")
 	}
 
 	t.Run("zero values omit from JSON", func(t *testing.T) {
@@ -384,10 +384,47 @@ func TestSummaryPinPersistence(t *testing.T) {
 		data2 := tr2.marshalStateLocked()
 		tr2.mu.Unlock()
 		s := string(data2)
-		if strings.Contains(s, "summary_msg_id") || strings.Contains(s, "summary_pinned") {
+		if strings.Contains(s, "dashboard_msg_id") || strings.Contains(s, "dashboard_pinned") {
 			t.Errorf("expected omitempty to drop zero fields, got: %s", s)
 		}
 	})
+}
+
+func TestLoadStateMigratesSummaryToDashboard(t *testing.T) {
+	dir := t.TempDir()
+	restore := chdir(t, dir)
+	defer restore()
+
+	// Write a session.json that uses the old "summary_msg_id" / "summary_pinned"
+	// field names — what live deployments currently have on disk.
+	if err := os.MkdirAll("data", 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const legacy = `{
+	  "session": {
+	    "chat_id": -100,
+	    "tracking_on": false,
+	    "summary_msg_id": 42,
+	    "summary_pinned": true
+	  }
+	}`
+	if err := os.WriteFile("data/session.json", []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	tr := &Tracker{users: make(map[int64]*UserInfo)}
+	tr.mu.Lock()
+	tr.loadState()
+	tr.mu.Unlock()
+	if tr.session == nil {
+		t.Fatal("expected session restored")
+	}
+	if tr.session.DashboardMsgID != 42 {
+		t.Errorf("DashboardMsgID = %d, want 42", tr.session.DashboardMsgID)
+	}
+	if !tr.session.DashboardPinned {
+		t.Errorf("DashboardPinned = false, want true (migrated from summary_pinned)")
+	}
 }
 
 func TestIsValidShortID(t *testing.T) {
