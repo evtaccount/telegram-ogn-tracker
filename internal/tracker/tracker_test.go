@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-telegram/bot/models"
 	"ogn/ddb"
 	"ogn/parser"
 )
@@ -1004,4 +1005,55 @@ func TestChooseHeading(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDashboardButtons(t *testing.T) {
+	collect := func(kb *models.InlineKeyboardMarkup) []string {
+		var out []string
+		if kb == nil {
+			return nil
+		}
+		for _, row := range kb.InlineKeyboard {
+			for _, b := range row {
+				out = append(out, b.CallbackData)
+			}
+		}
+		return out
+	}
+
+	t.Run("tracking on", func(t *testing.T) {
+		s := &GroupSession{TrackingOn: true, Tracking: map[string]*TrackInfo{"AA": {}}}
+		got := collect(dashboardButtons(s))
+		want := []string{"dashboard:stop", "dashboard:list", "dashboard:area", "dashboard:driver"}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("tracking off with pilots", func(t *testing.T) {
+		s := &GroupSession{Tracking: map[string]*TrackInfo{"AA": {}}}
+		got := collect(dashboardButtons(s))
+		want := []string{"dashboard:start", "dashboard:list", "dashboard:add", "dashboard:end"}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("tracking off no pilots", func(t *testing.T) {
+		s := &GroupSession{Tracking: map[string]*TrackInfo{}}
+		got := collect(dashboardButtons(s))
+		want := []string{"dashboard:add", "dashboard:area", "dashboard:end"}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("radar on", func(t *testing.T) {
+		s := &GroupSession{RadarOn: true}
+		got := collect(dashboardButtons(s))
+		want := []string{"dashboard:radar_stop", "dashboard:radar_radius"}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
 }

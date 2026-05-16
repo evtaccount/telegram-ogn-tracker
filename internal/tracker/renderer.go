@@ -299,6 +299,42 @@ func buildDashboard(s *GroupSession, devices map[string]ddb.Device, tz *time.Loc
 	return sb.String()
 }
 
+// dashboardButtons builds the state-dependent inline action row for the
+// dashboard message. Returns nil if no actions are available.
+func dashboardButtons(s *GroupSession) *models.InlineKeyboardMarkup {
+	if s == nil {
+		return nil
+	}
+	btn := func(text, action string) models.InlineKeyboardButton {
+		return models.InlineKeyboardButton{Text: text, CallbackData: "dashboard:" + action}
+	}
+	var rows [][]models.InlineKeyboardButton
+	switch {
+	case s.RadarOn:
+		rows = [][]models.InlineKeyboardButton{{
+			btn("⏹ Радар стоп", "radar_stop"),
+			btn("📡 Радиус", "radar_radius"),
+		}}
+	case s.TrackingOn:
+		rows = [][]models.InlineKeyboardButton{
+			{btn("⏹ Стоп", "stop"), btn("📋 Список", "list")},
+			{btn("📡 Зона", "area"), btn("🚗 Водитель", "driver")},
+		}
+	case len(s.Tracking) > 0:
+		rows = [][]models.InlineKeyboardButton{
+			{btn("▶️ Старт", "start"), btn("📋 Список", "list")},
+			{btn("➕ Добавить", "add"), btn("🔄 Завершить", "end")},
+		}
+	default:
+		rows = [][]models.InlineKeyboardButton{{
+			btn("➕ Добавить", "add"),
+			btn("📡 Зона", "area"),
+			btn("🔄 Завершить", "end"),
+		}}
+	}
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
 // pilotButtons returns inline buttons for pilots with known positions.
 // Flying pilots get a navigate button; landed pilots get navigate + pickup.
 func pilotButtons(local map[string]*TrackInfo) *models.InlineKeyboardMarkup {
