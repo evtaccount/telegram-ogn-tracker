@@ -87,9 +87,13 @@ func (t *Tracker) markLabelDead(id string, err error) {
 // current session state and either edits the existing dashboard message or
 // posts a new one. Idempotent: safe to call any number of times per tick and
 // from any goroutine. Handles the "edit on a dead message" path by reposting
-// and re-pinning, same semantics as patch A.
+// and re-pinning, same semantics as the previous summary block.
 //
 // Returns the live MessageID after the call. Must be called outside t.mu.
+//
+// Pin policy: unlike the old summary, the dashboard is the chat's anchor from
+// /start onward — we pin on first render regardless of whether any pilot has
+// reported yet. There is no withPos gate.
 func (t *Tracker) refreshDashboard(ctx context.Context, chatID int64) int {
 	t.mu.Lock()
 	if t.session == nil || t.session.ChatID != chatID {
@@ -100,16 +104,58 @@ func (t *Tracker) refreshDashboard(ctx context.Context, chatID int64) int {
 	b := t.bot
 	dashID := s.DashboardMsgID
 	dashPinned := s.DashboardPinned
+	// Deep-copy every collection the renderer touches so we can release the
+	// lock before any Telegram round-trip without racing other goroutines.
+	// runRadarClient mutates s.RadarEntries; command handlers mutate s.Drivers,
+	// s.Tracking, s.Landing, s.TrackArea. Reading any of them off-lock would
+	// risk a "concurrent map iteration and write" fatal.
 	tracking := make(map[string]*TrackInfo, len(s.Tracking))
 	for id, info := range s.Tracking {
 		cp := *info
 		tracking[id] = &cp
 	}
+	radarEntries := make(map[string]*RadarEntry, len(s.RadarEntries))
+	for id, e := range s.RadarEntries {
+		cp := *e
+		radarEntries[id] = &cp
+	}
+	driverCount := len(s.Drivers)
+	var landingCopy *Coordinates
+	if s.Landing != nil {
+		c := *s.Landing
+		landingCopy = &c
+	}
+	var areaCopy *Coordinates
+	if s.TrackArea != nil {
+		c := *s.TrackArea
+		areaCopy = &c
+	}
 	devices := t.devices
 	tz := s.tz()
-	// We work on a shallow copy of the session header to render off-lock.
-	sCopy := *s
-	sCopy.Tracking = tracking
+	// Snapshot every primitive used by the renderer; rebuild a session shell
+	// whose pointer/map fields all point at the deep copies above.
+	sCopy := GroupSession{
+		ChatID:             s.ChatID,
+		Tracking:           tracking,
+		TrackingOn:         s.TrackingOn,
+		Landing:            landingCopy,
+		TrackArea:          areaCopy,
+		TrackAreaRadius:    s.TrackAreaRadius,
+		Timezone:           s.Timezone,
+		Drivers:            make(map[int64]*DriverInfo, driverCount), // only len() is read; entries don't need to be live
+		DashboardMsgID:     s.DashboardMsgID,
+		DashboardPinned:    s.DashboardPinned,
+		InactivityWarnedAt: s.InactivityWarnedAt,
+		RadarOn:            s.RadarOn,
+		RadarRadius:        s.RadarRadius,
+		RadarEntries:       radarEntries,
+	}
+	// Fill placeholder entries so len(sCopy.Drivers) is correct in the
+	// renderer's `🚗 N водитель(ей)` line. The renderer never reads driver
+	// values, so a nil placeholder is safe.
+	for i := range driverCount {
+		sCopy.Drivers[int64(i)] = nil
+	}
 	t.mu.Unlock()
 
 	if b == nil {
