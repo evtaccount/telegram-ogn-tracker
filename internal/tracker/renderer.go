@@ -260,25 +260,27 @@ func buildDashboard(s *GroupSession, devices map[string]ddb.Device, tz *time.Loc
 
 	// Body: radar mode shows the radar summary, otherwise the pilot summary.
 	if s.RadarOn {
-		// Reuse existing radar renderer when there's enough info; otherwise
-		// fall back to a one-liner.
-		if s.TrackArea != nil && len(s.RadarEntries) >= 0 {
-			lines := make([]radarLine, 0, len(s.RadarEntries))
-			for id, e := range s.RadarEntries {
-				lines = append(lines, radarLine{id, *e})
-			}
-			sort.Slice(lines, func(i, j int) bool {
-				if lines[i].entry.Position == nil {
-					return false
-				}
-				if lines[j].entry.Position == nil {
-					return true
-				}
-				return lines[i].entry.Position.Altitude > lines[j].entry.Position.Altitude
-			})
-			sb.WriteString("\n\n")
-			sb.WriteString(buildRadarSummary(lines, s.TrackArea, s.RadarRadius, tz))
+		if s.TrackArea == nil {
+			// Radar without a center can't render anything meaningful — surface
+			// the inconsistency so the user knows to set a zone.
+			sb.WriteString("\n\n⚠️ Зона радара не задана.")
+			return sb.String()
 		}
+		lines := make([]radarLine, 0, len(s.RadarEntries))
+		for id, e := range s.RadarEntries {
+			lines = append(lines, radarLine{id, *e})
+		}
+		sort.Slice(lines, func(i, j int) bool {
+			if lines[i].entry.Position == nil {
+				return false
+			}
+			if lines[j].entry.Position == nil {
+				return true
+			}
+			return lines[i].entry.Position.Altitude > lines[j].entry.Position.Altitude
+		})
+		sb.WriteString("\n\n")
+		sb.WriteString(buildRadarSummary(lines, s.TrackArea, s.RadarRadius, tz))
 		return sb.String()
 	}
 
@@ -287,10 +289,11 @@ func buildDashboard(s *GroupSession, devices map[string]ddb.Device, tz *time.Loc
 		return sb.String()
 	}
 
-	// Reuse the existing pilot summary as the body. Drivers list passed empty —
-	// driver coordinates are not part of the dashboard's body (they are summarised
-	// in the status meta line).
-	body := buildSummary(s.Tracking, s.Landing, nil, s.TrackAreaRadius, devices, tz)
+	// Reuse the existing pilot summary as the body. Drivers list passed empty
+	// and areaRadius=0 suppresses the in-body zone line — both are already
+	// summarised on the dashboard's meta header so showing them twice would
+	// be visual noise.
+	body := buildSummary(s.Tracking, s.Landing, nil, 0, devices, tz)
 	sb.WriteString("\n\n")
 	sb.WriteString(body)
 	return sb.String()
