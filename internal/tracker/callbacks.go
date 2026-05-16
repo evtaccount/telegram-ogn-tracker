@@ -232,6 +232,8 @@ func (t *Tracker) cbStartFresh(ctx context.Context, b *bot.Bot, update *models.U
 	t.mu.Lock()
 	chatID := t.sessionChatID()
 	if t.session != nil {
+		// Delete the old dashboard BEFORE stopTrackingAsync zeros DashboardMsgID.
+		t.clearDashboardForReset()
 		t.stopTrackingAsync()
 		t.stopRadarAsync()
 	}
@@ -268,6 +270,15 @@ func (t *Tracker) cbDashboardAction(ctx context.Context, b *bot.Bot, update *mod
 		return
 	}
 	userID := cq.From.ID
+	// Guard: drop dashboard taps from non-allow-listed chats or untrusted users.
+	// Other callbacks gate on callbackChatAllowed; do the same here.
+	if !t.isAllowedChat(chatID) {
+		slog.Warn("dropping dashboard action from non-allowed chat", "chat_id", chatID, "user_id", userID)
+		return
+	}
+	if !t.isTrusted(userID) {
+		return
+	}
 	username := cq.From.Username
 	action := strings.TrimPrefix(cq.Data, "dashboard:")
 	slog.Info("dashboard action", "action", action, "chat_id", chatID, "user_id", userID)

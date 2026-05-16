@@ -247,7 +247,11 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64, wipePilots bool) int {
 	slog.Info("session reset", "chat_id", chatID, "wipe_pilots", wipePilots)
 	t.mu.Lock()
+	// Delete the dashboard BEFORE stopTrackingAsync zeros DashboardMsgID;
+	// otherwise clearDashboardForReset sees msgID == 0 and the pinned dashboard
+	// lingers in the chat.
 	if t.session != nil {
+		t.clearDashboardForReset()
 		t.stopTrackingAsync()
 		t.stopRadarAsync()
 	}
@@ -280,7 +284,6 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 			}
 		}
 	}
-	t.clearDashboardForReset()
 	t.session = newSession
 	t.updateFilter()
 	t.saveState()

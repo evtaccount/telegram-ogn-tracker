@@ -100,6 +100,8 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	}
 	// No session or empty session — create fresh.
 	if t.session != nil {
+		// Delete the old dashboard BEFORE stopTrackingAsync zeros DashboardMsgID.
+		t.clearDashboardForReset()
 		t.stopTrackingAsync()
 		t.stopRadarAsync()
 	}
@@ -135,6 +137,8 @@ func (t *Tracker) cmdStartSession(ctx context.Context, b *bot.Bot, update *model
 
 	t.mu.Lock()
 	if t.session != nil {
+		// Delete the old dashboard BEFORE stopTrackingAsync zeros DashboardMsgID.
+		t.clearDashboardForReset()
 		t.stopTrackingAsync()
 		t.stopRadarAsync()
 	}
@@ -431,6 +435,8 @@ func (t *Tracker) cmdDebugWipe(ctx context.Context, b *bot.Bot, update *models.U
 
 	t.mu.Lock()
 	if t.session != nil {
+		// Delete the old dashboard BEFORE stopTrackingAsync zeros DashboardMsgID.
+		t.clearDashboardForReset()
 		t.stopTrackingAsync()
 		t.stopRadarAsync()
 	}
