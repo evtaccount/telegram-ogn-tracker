@@ -932,6 +932,54 @@ func TestBuildFilter(t *testing.T) {
 	})
 }
 
+func TestBuildDashboard(t *testing.T) {
+	tz := time.UTC
+	devices := map[string]ddb.Device{}
+
+	t.Run("session active, no pilots, tracking off", func(t *testing.T) {
+		s := &GroupSession{Tracking: map[string]*TrackInfo{}}
+		got := buildDashboard(s, devices, tz)
+		if !strings.Contains(got, "Сессия активна") {
+			t.Errorf("missing status header in: %q", got)
+		}
+		if !strings.Contains(got, "Список пуст") {
+			t.Errorf("missing empty-list hint in: %q", got)
+		}
+	})
+
+	t.Run("tracking on shows pilots", func(t *testing.T) {
+		s := &GroupSession{
+			TrackingOn: true,
+			Tracking: map[string]*TrackInfo{
+				"AABBCC": {Name: "Eugene", Status: StatusFlying,
+					Position:   &parser.PositionMessage{Latitude: 41.7, Longitude: 44.7, GroundSpeed: 30, Altitude: 1500},
+					LastUpdate: time.Now()},
+			},
+		}
+		got := buildDashboard(s, devices, tz)
+		if !strings.Contains(got, "Трекинг: ✅") {
+			t.Errorf("expected tracking-on indicator, got: %q", got)
+		}
+		if !strings.Contains(got, "AABBCC") {
+			t.Errorf("expected pilot id in body, got: %q", got)
+		}
+	})
+
+	t.Run("inactivity warning surfaces in header", func(t *testing.T) {
+		s := &GroupSession{
+			TrackingOn:         true,
+			InactivityWarnedAt: time.Now().Add(-3 * time.Hour),
+			Tracking: map[string]*TrackInfo{
+				"AABBCC": {LastUpdate: time.Now().Add(-2*time.Hour - 30*time.Minute)},
+			},
+		}
+		got := buildDashboard(s, devices, tz)
+		if !strings.Contains(got, "Нет beacon-ов") {
+			t.Errorf("expected inactivity warning in: %q", got)
+		}
+	})
+}
+
 func TestChooseHeading(t *testing.T) {
 	cases := []struct {
 		name        string
