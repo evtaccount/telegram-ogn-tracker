@@ -217,6 +217,17 @@ func (t *Tracker) Shutdown() {
 	slog.Info("[shutdown] state saved, goroutines stopped")
 }
 
+// ensureUserByID looks up a user record by Telegram user ID, creating an
+// empty UserInfo if absent. Caller must hold t.mu.
+func (t *Tracker) ensureUserByID(userID int64) *UserInfo {
+	if u, ok := t.users[userID]; ok {
+		return u
+	}
+	u := &UserInfo{UserID: userID}
+	t.users[userID] = u
+	return u
+}
+
 // ensureUser returns or creates a UserInfo for the given Telegram user.
 // Must be called with t.mu held.
 func (t *Tracker) ensureUser(from *models.User) *UserInfo {

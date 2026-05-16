@@ -197,66 +197,7 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 	}
 
 	// /add without arguments: initiate DM flow.
-	// Try sending DM directly (works if user ever started the bot).
-	t.mu.Lock()
-	s := t.session
-	u := t.ensureUser(m.From)
-	u.PendingGroup = s.ChatID
-	hasOGNID := u.OGNID != ""
-	ognID := u.OGNID
-	t.saveState()
-	botUsername := t.botUsername
-	groupChatID := s.ChatID
-	t.mu.Unlock()
-
-	// Try to send DM using user ID as chat ID.
-	var dmText string
-	if hasOGNID {
-		dmText = fmt.Sprintf("Ваш OGN ID: %s\nОтправьте новый ID или /confirm чтобы использовать текущий.", ognID)
-	} else {
-		dmText = "Отправьте ваш OGN ID (6-значный адрес трекера):"
-	}
-	_, dmErr := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: m.From.ID,
-		Text:   dmText,
-	})
-
-	if dmErr == nil {
-		// DM sent successfully — register DMChatID.
-		t.mu.Lock()
-		u.DMChatID = m.From.ID
-		t.saveState()
-		t.mu.Unlock()
-
-		ackID := t.sendAck(ctx, &bot.SendMessageParams{
-			ChatID: m.Chat.ID,
-			Text:   "Написал вам в личку",
-		}, "failed to confirm DM sent in group")
-		// Queue (cmd + this ack) for cleanup; the DM bridge's group "Добавлен"
-		// reply will finalize the chain.
-		if ackID != 0 {
-			t.mu.Lock()
-			t.appendPendingCleanup(m.From.ID, m.ID, ackID)
-			t.mu.Unlock()
-		}
-		return
-	}
-
-	// Can't send DM — show deep link button.
-	slog.Warn("failed to send DM, falling back to deep link", "user_id", m.From.ID, "err", dmErr)
-	deepLink := fmt.Sprintf("https://t.me/%s?start=add_%d", botUsername, groupChatID)
-	kb := &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{
-				{Text: "Добавить свой трекер", URL: deepLink},
-			},
-		},
-	}
-	ackID := t.sendAck(ctx, &bot.SendMessageParams{
-		ChatID:      m.Chat.ID,
-		Text:        "Напишите мне в личку, чтобы добавить свой трекер",
-		ReplyMarkup: kb,
-	}, "failed to send deep link button")
+	ackID := t.execAddNoArgsPrompt(ctx, b, m.Chat.ID, m.From.ID)
 	if ackID != 0 {
 		t.mu.Lock()
 		t.appendPendingCleanup(m.From.ID, m.ID, ackID)

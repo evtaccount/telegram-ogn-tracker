@@ -899,6 +899,64 @@ func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, u
 	}, "failed to confirm driver off")
 }
 
+// execAddNoArgsPrompt runs the "/add without arguments" flow: sets the user's
+// PendingGroup, tries to DM the user, and falls back to posting a deep-link
+// button in the group when the DM cannot be delivered. Returns the ID of the
+// in-group ack message (0 if none was sent). Extracted from cmdAdd so the
+// dashboard callback can reuse the same path.
+func (t *Tracker) execAddNoArgsPrompt(ctx context.Context, b *bot.Bot, chatID int64, userID int64) int {
+	t.mu.Lock()
+	s := t.session
+	if s == nil || s.ChatID != chatID {
+		t.mu.Unlock()
+		return 0
+	}
+	u := t.ensureUserByID(userID)
+	u.PendingGroup = s.ChatID
+	hasOGNID := u.OGNID != ""
+	ognID := u.OGNID
+	t.saveState()
+	botUsername := t.botUsername
+	groupChatID := s.ChatID
+	t.mu.Unlock()
+
+	var dmText string
+	if hasOGNID {
+		dmText = fmt.Sprintf("Ваш OGN ID: %s\nОтправьте новый ID или /confirm чтобы использовать текущий.", ognID)
+	} else {
+		dmText = "Отправьте ваш OGN ID (6-значный адрес трекера):"
+	}
+	_, dmErr := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: userID,
+		Text:   dmText,
+	})
+	if dmErr == nil {
+		// DM sent successfully — register DMChatID.
+		t.mu.Lock()
+		u.DMChatID = userID
+		t.saveState()
+		t.mu.Unlock()
+		return t.sendAck(ctx, &bot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "Написал вам в личку",
+		}, "failed to confirm DM sent in group")
+	}
+
+	// Can't send DM — show deep link button.
+	slog.Warn("failed to send DM, falling back to deep link", "user_id", userID, "err", dmErr)
+	deepLink := fmt.Sprintf("https://t.me/%s?start=add_%d", botUsername, groupChatID)
+	kb := &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{{Text: "Добавить свой трекер", URL: deepLink}},
+		},
+	}
+	return t.sendAck(ctx, &bot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        "Напишите мне в личку, чтобы добавить свой трекер",
+		ReplyMarkup: kb,
+	}, "failed to send deep link button")
+}
+
 // execPickup marks a pilot as picked up (StatusPickedUp) and confirms in the group.
 func (t *Tracker) execPickup(ctx context.Context, b *bot.Bot, id string) {
 	slog.Info("pickup", "id", id)
