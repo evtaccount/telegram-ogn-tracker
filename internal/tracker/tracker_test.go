@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-telegram/bot/models"
 	"ogn/ddb"
 	"ogn/parser"
 )
@@ -342,10 +343,10 @@ func TestSummaryPinPersistence(t *testing.T) {
 		saveCh:   make(chan []byte, 1),
 		saveDone: make(chan struct{}),
 		session: &GroupSession{
-			ChatID:        -100200,
-			Tracking:      map[string]*TrackInfo{},
-			SummaryMsgID:  12345,
-			SummaryPinned: true,
+			ChatID:          -100200,
+			Tracking:        map[string]*TrackInfo{},
+			DashboardMsgID:  12345,
+			DashboardPinned: true,
 		},
 	}
 
@@ -363,11 +364,11 @@ func TestSummaryPinPersistence(t *testing.T) {
 	if roundtrip.Session == nil {
 		t.Fatal("expected session to round-trip")
 	}
-	if roundtrip.Session.SummaryMsgID != 12345 {
-		t.Errorf("SummaryMsgID = %d, want 12345", roundtrip.Session.SummaryMsgID)
+	if roundtrip.Session.DashboardMsgID != 12345 {
+		t.Errorf("DashboardMsgID = %d, want 12345", roundtrip.Session.DashboardMsgID)
 	}
-	if !roundtrip.Session.SummaryPinned {
-		t.Errorf("SummaryPinned = false, want true")
+	if !roundtrip.Session.DashboardPinned {
+		t.Errorf("DashboardPinned = false, want true")
 	}
 
 	t.Run("zero values omit from JSON", func(t *testing.T) {
@@ -384,10 +385,47 @@ func TestSummaryPinPersistence(t *testing.T) {
 		data2 := tr2.marshalStateLocked()
 		tr2.mu.Unlock()
 		s := string(data2)
-		if strings.Contains(s, "summary_msg_id") || strings.Contains(s, "summary_pinned") {
+		if strings.Contains(s, "dashboard_msg_id") || strings.Contains(s, "dashboard_pinned") {
 			t.Errorf("expected omitempty to drop zero fields, got: %s", s)
 		}
 	})
+}
+
+func TestLoadStateMigratesSummaryToDashboard(t *testing.T) {
+	dir := t.TempDir()
+	restore := chdir(t, dir)
+	defer restore()
+
+	// Write a session.json that uses the old "summary_msg_id" / "summary_pinned"
+	// field names — what live deployments currently have on disk.
+	if err := os.MkdirAll("data", 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const legacy = `{
+	  "session": {
+	    "chat_id": -100,
+	    "tracking_on": false,
+	    "summary_msg_id": 42,
+	    "summary_pinned": true
+	  }
+	}`
+	if err := os.WriteFile("data/session.json", []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	tr := &Tracker{users: make(map[int64]*UserInfo)}
+	tr.mu.Lock()
+	tr.loadState()
+	tr.mu.Unlock()
+	if tr.session == nil {
+		t.Fatal("expected session restored")
+	}
+	if tr.session.DashboardMsgID != 42 {
+		t.Errorf("DashboardMsgID = %d, want 42", tr.session.DashboardMsgID)
+	}
+	if !tr.session.DashboardPinned {
+		t.Errorf("DashboardPinned = false, want true (migrated from summary_pinned)")
+	}
 }
 
 func TestIsValidShortID(t *testing.T) {
@@ -895,6 +933,54 @@ func TestBuildFilter(t *testing.T) {
 	})
 }
 
+func TestBuildDashboard(t *testing.T) {
+	tz := time.UTC
+	devices := map[string]ddb.Device{}
+
+	t.Run("session active, no pilots, tracking off", func(t *testing.T) {
+		s := &GroupSession{Tracking: map[string]*TrackInfo{}}
+		got := buildDashboard(s, devices, tz)
+		if !strings.Contains(got, "Сессия активна") {
+			t.Errorf("missing status header in: %q", got)
+		}
+		if !strings.Contains(got, "Список пуст") {
+			t.Errorf("missing empty-list hint in: %q", got)
+		}
+	})
+
+	t.Run("tracking on shows pilots", func(t *testing.T) {
+		s := &GroupSession{
+			TrackingOn: true,
+			Tracking: map[string]*TrackInfo{
+				"AABBCC": {Name: "Eugene", Status: StatusFlying,
+					Position:   &parser.PositionMessage{Latitude: 41.7, Longitude: 44.7, GroundSpeed: 30, Altitude: 1500},
+					LastUpdate: time.Now()},
+			},
+		}
+		got := buildDashboard(s, devices, tz)
+		if !strings.Contains(got, "Трекинг: ✅") {
+			t.Errorf("expected tracking-on indicator, got: %q", got)
+		}
+		if !strings.Contains(got, "AABBCC") {
+			t.Errorf("expected pilot id in body, got: %q", got)
+		}
+	})
+
+	t.Run("inactivity warning surfaces in header", func(t *testing.T) {
+		s := &GroupSession{
+			TrackingOn:         true,
+			InactivityWarnedAt: time.Now().Add(-3 * time.Hour),
+			Tracking: map[string]*TrackInfo{
+				"AABBCC": {LastUpdate: time.Now().Add(-2*time.Hour - 30*time.Minute)},
+			},
+		}
+		got := buildDashboard(s, devices, tz)
+		if !strings.Contains(got, "Нет beacon-ов") {
+			t.Errorf("expected inactivity warning in: %q", got)
+		}
+	})
+}
+
 func TestChooseHeading(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -919,4 +1005,76 @@ func TestChooseHeading(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDashboardButtons(t *testing.T) {
+	collect := func(kb *models.InlineKeyboardMarkup) []string {
+		var out []string
+		if kb == nil {
+			return nil
+		}
+		for _, row := range kb.InlineKeyboard {
+			for _, b := range row {
+				out = append(out, b.CallbackData)
+			}
+		}
+		return out
+	}
+
+	t.Run("tracking on", func(t *testing.T) {
+		s := &GroupSession{TrackingOn: true, Tracking: map[string]*TrackInfo{"AA": {}}}
+		got := collect(dashboardButtons(s))
+		want := []string{"dashboard:stop", "dashboard:list", "dashboard:area", "dashboard:driver"}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("tracking off with pilots", func(t *testing.T) {
+		s := &GroupSession{Tracking: map[string]*TrackInfo{"AA": {}}}
+		got := collect(dashboardButtons(s))
+		want := []string{"dashboard:start", "dashboard:list", "dashboard:add", "dashboard:end"}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("tracking off no pilots", func(t *testing.T) {
+		s := &GroupSession{Tracking: map[string]*TrackInfo{}}
+		got := collect(dashboardButtons(s))
+		want := []string{"dashboard:add", "dashboard:area", "dashboard:end"}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("radar on", func(t *testing.T) {
+		s := &GroupSession{RadarOn: true}
+		got := collect(dashboardButtons(s))
+		want := []string{"dashboard:radar_stop", "dashboard:radar_radius"}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+}
+
+func TestSessionResetClearsDashboard(t *testing.T) {
+	tr := &Tracker{
+		users: make(map[int64]*UserInfo),
+		session: &GroupSession{
+			ChatID:          -100,
+			Tracking:        map[string]*TrackInfo{},
+			DashboardMsgID:  77,
+			DashboardPinned: true,
+		},
+	}
+	tr.mu.Lock()
+	tr.clearDashboardForReset()
+	if tr.session.DashboardMsgID != 0 {
+		t.Errorf("DashboardMsgID = %d, want 0", tr.session.DashboardMsgID)
+	}
+	if tr.session.DashboardPinned {
+		t.Errorf("DashboardPinned should be false after reset")
+	}
+	tr.mu.Unlock()
 }

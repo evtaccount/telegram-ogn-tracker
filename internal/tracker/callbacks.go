@@ -3,6 +3,7 @@ package tracker
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -231,6 +232,8 @@ func (t *Tracker) cbStartFresh(ctx context.Context, b *bot.Bot, update *models.U
 	t.mu.Lock()
 	chatID := t.sessionChatID()
 	if t.session != nil {
+		// Delete the old dashboard BEFORE stopTrackingAsync zeros DashboardMsgID.
+		t.clearDashboardForReset()
 		t.stopTrackingAsync()
 		t.stopRadarAsync()
 	}
@@ -245,4 +248,69 @@ func (t *Tracker) cbStartFresh(ctx context.Context, b *bot.Bot, update *models.U
 		ackID := t.execTrackOn(ctx, b, chatID)
 		t.finalizePendingCleanup(cq.From.ID, chatID, ackID)
 	}
+}
+
+// cbDashboardAction is the single entry point for all dashboard:* callback
+// queries. It answers the callback (clears the spinner), routes to the
+// appropriate exec* helper, then triggers a dashboard refresh so the user
+// sees the new state without waiting for the heartbeat tick.
+func (t *Tracker) cbDashboardAction(ctx context.Context, b *bot.Bot, update *models.Update) {
+	cq := update.CallbackQuery
+	if cq == nil {
+		return
+	}
+	// Acknowledge first so the client UI stops spinning.
+	_, _ = b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cq.ID})
+
+	chatID := int64(0)
+	if msg := cq.Message.Message; msg != nil {
+		chatID = msg.Chat.ID
+	}
+	if chatID == 0 {
+		return
+	}
+	userID := cq.From.ID
+	// Guard: drop dashboard taps from non-allow-listed chats or untrusted users.
+	// Other callbacks gate on callbackChatAllowed; do the same here.
+	if !t.isAllowedChat(chatID) {
+		slog.Warn("dropping dashboard action from non-allowed chat", "chat_id", chatID, "user_id", userID)
+		return
+	}
+	if !t.isTrusted(userID) {
+		return
+	}
+	username := cq.From.Username
+	action := strings.TrimPrefix(cq.Data, "dashboard:")
+	slog.Info("dashboard action", "action", action, "chat_id", chatID, "user_id", userID)
+
+	switch action {
+	case "start":
+		t.execTrackOn(ctx, b, chatID)
+	case "stop":
+		// Route through confirmation, matching the old reply-keyboard "⏹ Стоп"
+		// behaviour. Silently halting a live tracking session on a stray tap
+		// would be a sharp edge for the group.
+		t.askTrackOffConfirm(ctx, b, chatID, userID, 0)
+	case "list":
+		t.execList(ctx, b, chatID)
+	case "add":
+		t.execAddNoArgsPrompt(ctx, b, chatID, userID)
+	case "area":
+		t.execArea(ctx, b, chatID, defaultAreaRadius, userID, 0)
+	case "driver":
+		t.execDriver(ctx, b, chatID, userID, username, 0)
+	case "end":
+		t.askSessionResetConfirm(ctx, b, chatID, userID, 0)
+	case "radar_stop":
+		t.execRadarOff(ctx, b, chatID)
+	case "radar_radius":
+		t.execRadarAskRadius(ctx, b, chatID, userID, 0)
+	default:
+		slog.Warn("unknown dashboard action", "action", action)
+	}
+
+	// Safe to call even when an action just opened a confirm prompt or hit the
+	// default branch — refreshDashboard no-ops if the session/chatID no longer
+	// matches, and otherwise it harmlessly re-renders the current state.
+	t.refreshDashboard(ctx, chatID)
 }

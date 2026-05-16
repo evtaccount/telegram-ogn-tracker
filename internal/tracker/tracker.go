@@ -217,6 +217,17 @@ func (t *Tracker) Shutdown() {
 	slog.Info("[shutdown] state saved, goroutines stopped")
 }
 
+// ensureUserByID looks up a user record by Telegram user ID, creating an
+// empty UserInfo if absent. Caller must hold t.mu.
+func (t *Tracker) ensureUserByID(userID int64) *UserInfo {
+	if u, ok := t.users[userID]; ok {
+		return u
+	}
+	u := &UserInfo{UserID: userID}
+	t.users[userID] = u
+	return u
+}
+
 // ensureUser returns or creates a UserInfo for the given Telegram user.
 // Must be called with t.mu held.
 func (t *Tracker) ensureUser(from *models.User) *UserInfo {
@@ -276,6 +287,7 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset_confirm", bot.MatchTypeExact, t.cbSessionResetConfirm)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset_wipe", bot.MatchTypeExact, t.cbSessionResetWipe)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset_cancel", bot.MatchTypeExact, t.cbSessionResetCancel)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "dashboard:", bot.MatchTypePrefix, t.cbDashboardAction)
 
 	// Auto-resume tracking if it was active before restart.
 	if t.resumeOnStart && t.session != nil {
@@ -530,7 +542,6 @@ func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Messag
 	u.OGNID = id
 	u.PendingGroup = 0
 	t.updateFilter()
-	kb := s.replyKeyboard()
 	dmKb := t.dmReplyKeyboard(u.UserID)
 	t.saveState()
 	t.mu.Unlock()
@@ -553,11 +564,11 @@ func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Messag
 		label = id + " (" + name + ")"
 	}
 	groupAckID := t.sendAck(ctx, &bot.SendMessageParams{
-		ChatID:      groupChatID,
-		Text:        "Добавлен " + label,
-		ReplyMarkup: kb,
+		ChatID: groupChatID,
+		Text:   "Добавлен " + label,
 	}, "failed to confirm add in group")
 	// Finalize the /add no-arg chain: drain (group cmd + "Написал в личку")
 	// queued under this user, append the group ack, schedule batch cleanup.
 	t.finalizePendingCleanup(m.From.ID, groupChatID, groupAckID)
+	t.refreshDashboard(ctx, groupChatID)
 }

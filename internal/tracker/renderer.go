@@ -209,6 +209,132 @@ func buildSummary(local map[string]*TrackInfo, landing *Coordinates, drivers []*
 	return header + "\n\n" + strings.Join(sections, "\n\n")
 }
 
+// buildDashboard composes the persistent group-chat dashboard. The dashboard
+// always exists between /start and /session_reset and replaces both the older
+// "summary" message and the reply keyboard. It is one Telegram text body that
+// folds together: a status header (always present), an inactivity warning
+// (when applicable), and either the radar summary or the pilot summary.
+func buildDashboard(s *GroupSession, devices map[string]ddb.Device, tz *time.Location) string {
+	if s == nil {
+		return "Нет активной сессии. /start чтобы начать."
+	}
+
+	var sb strings.Builder
+
+	// Status header.
+	tracking := "⏸ выкл."
+	if s.TrackingOn {
+		tracking = "✅ вкл."
+	}
+	if s.RadarOn {
+		tracking = "📡 радар"
+	}
+	fmt.Fprintf(&sb, "📌 Сессия активна · Трекинг: %s", tracking)
+
+	var meta []string
+	if s.TrackArea != nil {
+		meta = append(meta, fmt.Sprintf("📡 Зона: %dкм", s.TrackAreaRadius))
+	}
+	if len(s.Drivers) > 0 {
+		meta = append(meta, fmt.Sprintf("🚗 %d водитель(ей)", len(s.Drivers)))
+	}
+	if len(meta) > 0 {
+		sb.WriteString("\n")
+		sb.WriteString(strings.Join(meta, " · "))
+	}
+
+	// Inactivity warning: surface here instead of as a separate chat message
+	// so the dashboard is the single source of UI truth.
+	if !s.InactivityWarnedAt.IsZero() {
+		var lastBeacon time.Time
+		for _, info := range s.Tracking {
+			if info.LastUpdate.After(lastBeacon) {
+				lastBeacon = info.LastUpdate
+			}
+		}
+		if !lastBeacon.IsZero() {
+			age := time.Since(lastBeacon).Round(time.Minute)
+			fmt.Fprintf(&sb, "\n⚠️ Нет beacon-ов %s", age)
+		}
+	}
+
+	// Body: radar mode shows the radar summary, otherwise the pilot summary.
+	if s.RadarOn {
+		if s.TrackArea == nil {
+			// Radar without a center can't render anything meaningful — surface
+			// the inconsistency so the user knows to set a zone.
+			sb.WriteString("\n\n⚠️ Зона радара не задана.")
+			return sb.String()
+		}
+		lines := make([]radarLine, 0, len(s.RadarEntries))
+		for id, e := range s.RadarEntries {
+			lines = append(lines, radarLine{id, *e})
+		}
+		sort.Slice(lines, func(i, j int) bool {
+			if lines[i].entry.Position == nil {
+				return false
+			}
+			if lines[j].entry.Position == nil {
+				return true
+			}
+			return lines[i].entry.Position.Altitude > lines[j].entry.Position.Altitude
+		})
+		sb.WriteString("\n\n")
+		sb.WriteString(buildRadarSummary(lines, s.TrackArea, s.RadarRadius, tz))
+		return sb.String()
+	}
+
+	if len(s.Tracking) == 0 {
+		sb.WriteString("\n\nСписок пуст. /add <id> чтобы добавить пилота.")
+		return sb.String()
+	}
+
+	// Reuse the existing pilot summary as the body. Drivers list passed empty
+	// and areaRadius=0 suppresses the in-body zone line — both are already
+	// summarised on the dashboard's meta header so showing them twice would
+	// be visual noise.
+	body := buildSummary(s.Tracking, s.Landing, nil, 0, devices, tz)
+	sb.WriteString("\n\n")
+	sb.WriteString(body)
+	return sb.String()
+}
+
+// dashboardButtons builds the state-dependent inline action row for the
+// dashboard message. Returns nil if no actions are available.
+func dashboardButtons(s *GroupSession) *models.InlineKeyboardMarkup {
+	if s == nil {
+		return nil
+	}
+	btn := func(text, action string) models.InlineKeyboardButton {
+		return models.InlineKeyboardButton{Text: text, CallbackData: "dashboard:" + action}
+	}
+	var rows [][]models.InlineKeyboardButton
+	switch {
+	case s.RadarOn:
+		rows = [][]models.InlineKeyboardButton{{
+			btn("⏹ Радар стоп", "radar_stop"),
+			btn("📡 Радиус", "radar_radius"),
+		}}
+	case s.TrackingOn:
+		rows = [][]models.InlineKeyboardButton{
+			{btn("⏹ Стоп", "stop"), btn("📋 Список", "list")},
+			{btn("📡 Зона", "area"), btn("🚗 Водитель", "driver")},
+		}
+	case len(s.Tracking) > 0:
+		rows = [][]models.InlineKeyboardButton{
+			{btn("▶️ Старт", "start"), btn("📋 Список", "list")},
+			{btn("➕ Добавить", "add"), btn("🔄 Завершить", "end")},
+		}
+	default:
+		rows = [][]models.InlineKeyboardButton{{
+			btn("➕ Добавить", "add"),
+			btn("📡 Зона", "area"),
+			btn("🔄 Завершить", "end"),
+		}}
+	}
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
 // pilotButtons returns inline buttons for pilots with known positions.
 // Flying pilots get a navigate button; landed pilots get navigate + pickup.
 func pilotButtons(local map[string]*TrackInfo) *models.InlineKeyboardMarkup {

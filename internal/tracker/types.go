@@ -4,8 +4,6 @@ import (
 	"time"
 
 	"ogn/parser"
-
-	"github.com/go-telegram/bot/models"
 )
 
 // PilotStatus represents the current state of a tracked pilot.
@@ -112,11 +110,11 @@ type GroupSession struct {
 	TrackAreaRadius int
 	Timezone        *time.Location
 	Drivers         map[int64]*DriverInfo
-	SummaryMsgID    int
-	// SummaryPinned is true once PinChatMessage succeeded for the current
-	// SummaryMsgID. Persisted so a restart doesn't re-pin (and re-notify) an
+	DashboardMsgID    int
+	// DashboardPinned is true once PinChatMessage succeeded for the current
+	// DashboardMsgID. Persisted so a restart doesn't re-pin (and re-notify) an
 	// already-pinned message.
-	SummaryPinned bool
+	DashboardPinned bool
 	// Runtime (not persisted):
 	StopCh         chan struct{}
 	WaitingLanding bool
@@ -154,69 +152,6 @@ func (s *GroupSession) tz() *time.Location {
 		return s.Timezone
 	}
 	return time.UTC
-}
-
-// replyKeyboard returns an inline keyboard based on current session state.
-// Must be called with t.mu held.
-func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
-	if s == nil {
-		return nil
-	}
-	hasContent := len(s.Tracking) > 0 || s.TrackArea != nil
-
-	if s.RadarOn {
-		return &models.ReplyKeyboardMarkup{
-			Keyboard: [][]models.KeyboardButton{
-				{
-					{Text: "⏹ Радар стоп"},
-					{Text: "📡 Радиус"},
-				},
-			},
-			ResizeKeyboard: true,
-		}
-	}
-
-	if s.TrackingOn {
-		areaText := "📡 Зона"
-		if s.TrackArea != nil {
-			areaText = "📡 Зона ✕"
-		}
-		return &models.ReplyKeyboardMarkup{
-			Keyboard: [][]models.KeyboardButton{
-				{
-					{Text: "⏹ Стоп"},
-					{Text: "📋 Список"},
-				},
-				{
-					{Text: areaText},
-					{Text: "🚗 Водитель"},
-				},
-			},
-			ResizeKeyboard: true,
-		}
-	}
-	var rows [][]models.KeyboardButton
-	if hasContent {
-		row1 := []models.KeyboardButton{
-			{Text: "▶️ Старт"},
-			{Text: "📋 Список"},
-			{Text: "🔄 Завершить"},
-		}
-		rows = append(rows, row1)
-		if s.TrackArea != nil {
-			rows = append(rows, []models.KeyboardButton{{Text: "📡 Радар"}})
-		}
-	} else {
-		rows = append(rows, []models.KeyboardButton{
-			{Text: "➕ Добавить"},
-			{Text: "📡 Зона"},
-			{Text: "🔄 Завершить"},
-		})
-	}
-	return &models.ReplyKeyboardMarkup{
-		Keyboard:       rows,
-		ResizeKeyboard: true,
-	}
 }
 
 // UserInfo represents a known user across sessions.

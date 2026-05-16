@@ -100,6 +100,8 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	}
 	// No session or empty session — create fresh.
 	if t.session != nil {
+		// Delete the old dashboard BEFORE stopTrackingAsync zeros DashboardMsgID.
+		t.clearDashboardForReset()
 		t.stopTrackingAsync()
 		t.stopRadarAsync()
 	}
@@ -108,15 +110,16 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 		Tracking: make(map[string]*TrackInfo),
 		Drivers:  make(map[int64]*DriverInfo),
 	}
-	kb := t.session.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
 	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 		ChatID:      m.Chat.ID,
 		Text:        "Сессия начата. Используйте /add <id> или /area.",
-		ReplyMarkup: kb,
+		ReplyMarkup: removeReplyKB,
 	}, "failed to send start message")
+
+	t.refreshDashboard(ctx, m.Chat.ID)
 }
 
 // cmdStartSession unconditionally creates a fresh session in the current group
@@ -134,6 +137,8 @@ func (t *Tracker) cmdStartSession(ctx context.Context, b *bot.Bot, update *model
 
 	t.mu.Lock()
 	if t.session != nil {
+		// Delete the old dashboard BEFORE stopTrackingAsync zeros DashboardMsgID.
+		t.clearDashboardForReset()
 		t.stopTrackingAsync()
 		t.stopRadarAsync()
 	}
@@ -142,15 +147,16 @@ func (t *Tracker) cmdStartSession(ctx context.Context, b *bot.Bot, update *model
 		Tracking: make(map[string]*TrackInfo),
 		Drivers:  make(map[int64]*DriverInfo),
 	}
-	kb := t.session.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
 	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 		ChatID:      m.Chat.ID,
 		Text:        "Сессия пересоздана. Все пилоты удалены. Используйте /add <id> или /area.",
-		ReplyMarkup: kb,
+		ReplyMarkup: removeReplyKB,
 	}, "failed to send start_session message")
+
+	t.refreshDashboard(ctx, m.Chat.ID)
 }
 
 func (t *Tracker) cmdSessionReset(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -196,67 +202,14 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 		return
 	}
 
-	// /add without arguments: initiate DM flow.
-	// Try sending DM directly (works if user ever started the bot).
+	// /add without arguments: initiate DM flow. Refresh the user record from
+	// the live Telegram message first so the display name / username we
+	// captured earlier (or never captured) stay current — execAddNoArgsPrompt
+	// itself only knows the userID and can't refresh those fields.
 	t.mu.Lock()
-	s := t.session
-	u := t.ensureUser(m.From)
-	u.PendingGroup = s.ChatID
-	hasOGNID := u.OGNID != ""
-	ognID := u.OGNID
-	t.saveState()
-	botUsername := t.botUsername
-	groupChatID := s.ChatID
+	t.ensureUser(m.From)
 	t.mu.Unlock()
-
-	// Try to send DM using user ID as chat ID.
-	var dmText string
-	if hasOGNID {
-		dmText = fmt.Sprintf("Ваш OGN ID: %s\nОтправьте новый ID или /confirm чтобы использовать текущий.", ognID)
-	} else {
-		dmText = "Отправьте ваш OGN ID (6-значный адрес трекера):"
-	}
-	_, dmErr := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: m.From.ID,
-		Text:   dmText,
-	})
-
-	if dmErr == nil {
-		// DM sent successfully — register DMChatID.
-		t.mu.Lock()
-		u.DMChatID = m.From.ID
-		t.saveState()
-		t.mu.Unlock()
-
-		ackID := t.sendAck(ctx, &bot.SendMessageParams{
-			ChatID: m.Chat.ID,
-			Text:   "Написал вам в личку",
-		}, "failed to confirm DM sent in group")
-		// Queue (cmd + this ack) for cleanup; the DM bridge's group "Добавлен"
-		// reply will finalize the chain.
-		if ackID != 0 {
-			t.mu.Lock()
-			t.appendPendingCleanup(m.From.ID, m.ID, ackID)
-			t.mu.Unlock()
-		}
-		return
-	}
-
-	// Can't send DM — show deep link button.
-	slog.Warn("failed to send DM, falling back to deep link", "user_id", m.From.ID, "err", dmErr)
-	deepLink := fmt.Sprintf("https://t.me/%s?start=add_%d", botUsername, groupChatID)
-	kb := &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{
-				{Text: "Добавить свой трекер", URL: deepLink},
-			},
-		},
-	}
-	ackID := t.sendAck(ctx, &bot.SendMessageParams{
-		ChatID:      m.Chat.ID,
-		Text:        "Напишите мне в личку, чтобы добавить свой трекер",
-		ReplyMarkup: kb,
-	}, "failed to send deep link button")
+	ackID := t.execAddNoArgsPrompt(ctx, b, m.Chat.ID, m.From.ID)
 	if ackID != 0 {
 		t.mu.Lock()
 		t.appendPendingCleanup(m.From.ID, m.ID, ackID)
@@ -301,17 +254,17 @@ func (t *Tracker) cmdRemove(ctx context.Context, b *bot.Bot, update *models.Upda
 	}
 	delete(s.Tracking, id)
 	t.updateFilter()
-	kb := s.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
 	t.deleteMessagesAsync(m.Chat.ID, orphanIDs...)
 
 	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
-		ChatID:      m.Chat.ID,
-		Text:        "Удалён " + id,
-		ReplyMarkup: kb,
+		ChatID: m.Chat.ID,
+		Text:   "Удалён " + id,
 	}, "failed to confirm remove")
+
+	t.refreshDashboard(ctx, m.Chat.ID)
 }
 
 func (t *Tracker) cmdTrackOn(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -367,17 +320,12 @@ func (t *Tracker) cmdStatus(ctx context.Context, b *bot.Bot, update *models.Upda
 	if t.session != nil {
 		count = len(t.session.Tracking)
 	}
-	var kb *models.ReplyKeyboardMarkup
-	if t.session != nil {
-		kb = t.session.replyKeyboard()
-	}
 	t.mu.Unlock()
 
 	text := fmt.Sprintf("Трекинг %s. Адресов: %d.", status, count)
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID:      m.Chat.ID,
-		Text:        text,
-		ReplyMarkup: kb,
+		ChatID: m.Chat.ID,
+		Text:   text,
 	}); err != nil {
 		slog.Error("failed to send status", "err", err)
 	}
@@ -436,6 +384,8 @@ func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) 
 		ChatID: m.Chat.ID,
 		Text:   fmt.Sprintf("Часовой пояс: %s (сейчас: %s)", loc.String(), now),
 	}, "failed to confirm tz")
+
+	t.refreshDashboard(ctx, m.Chat.ID)
 }
 
 func (t *Tracker) cmdHelp(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -485,6 +435,8 @@ func (t *Tracker) cmdDebugWipe(ctx context.Context, b *bot.Bot, update *models.U
 
 	t.mu.Lock()
 	if t.session != nil {
+		// Delete the old dashboard BEFORE stopTrackingAsync zeros DashboardMsgID.
+		t.clearDashboardForReset()
 		t.stopTrackingAsync()
 		t.stopRadarAsync()
 	}
@@ -494,11 +446,9 @@ func (t *Tracker) cmdDebugWipe(ctx context.Context, b *bot.Bot, update *models.U
 	t.mu.Unlock()
 
 	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
-		ChatID: m.Chat.ID,
-		Text:   "Все данные бота полностью очищены.",
-		ReplyMarkup: &models.ReplyKeyboardRemove{
-			RemoveKeyboard: true,
-		},
+		ChatID:      m.Chat.ID,
+		Text:        "Все данные бота полностью очищены.",
+		ReplyMarkup: removeReplyKB,
 	}, "failed to send wipe confirmation")
 }
 

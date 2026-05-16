@@ -84,7 +84,6 @@ func (t *Tracker) execAddDirect(ctx context.Context, b *bot.Bot, m *models.Messa
 	if info := formatDDBInfo(t.devices, id); info != "" {
 		ddbInfo = "\n📋 " + info
 	}
-	kb := s.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
@@ -97,11 +96,13 @@ func (t *Tracker) execAddDirect(ctx context.Context, b *bot.Bot, m *models.Messa
 	}
 	text += ddbInfo
 
-	return t.sendAck(ctx, &bot.SendMessageParams{
-		ChatID:      m.Chat.ID,
-		Text:        text,
-		ReplyMarkup: kb,
+	ackID := t.sendAck(ctx, &bot.SendMessageParams{
+		ChatID: m.Chat.ID,
+		Text:   text,
 	}, "failed to confirm add")
+
+	t.refreshDashboard(ctx, m.Chat.ID)
+	return ackID
 }
 
 // askSessionResetConfirm shows the inline confirm/wipe/cancel dialog for
@@ -152,26 +153,23 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 			d.Pos = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
 			d.MsgID = m.ID
 			d.Waiting = false
-			kb := s.replyKeyboard()
 			t.mu.Unlock()
 			ackID := t.sendAck(ctx, &bot.SendMessageParams{
-				ChatID:      m.Chat.ID,
-				Text:        "🚗 Водитель активен. Расстояния будут в сводке.",
-				ReplyMarkup: kb,
+				ChatID: m.Chat.ID,
+				Text:   "🚗 Водитель активен. Расстояния будут в сводке.",
 			}, "failed to confirm driver location")
 			// Drain queued (cmd + prompt) and clean together with this ack.
 			// The driver's live-location pin stays — that IS the tracking.
 			t.finalizePendingCleanup(m.From.ID, m.Chat.ID, ackID)
+			t.refreshDashboard(ctx, m.Chat.ID)
 			return
 		}
 		// Static pin — use as temporary position, keep waiting for live.
 		d.Pos = &Coordinates{Latitude: loc.Latitude, Longitude: loc.Longitude}
-		kb := s.replyKeyboard()
 		t.mu.Unlock()
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID:      m.Chat.ID,
-			Text:        "📍 Позиция принята. Для непрерывного отслеживания отправьте live-локацию.",
-			ReplyMarkup: kb,
+			ChatID: m.Chat.ID,
+			Text:   "📍 Позиция принята. Для непрерывного отслеживания отправьте live-локацию.",
 		}); err != nil {
 			slog.Error("failed to send driver static hint", "err", err)
 		}
@@ -195,7 +193,6 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 			}
 		}
 
-		kb := s.replyKeyboard()
 		t.saveState()
 		t.mu.Unlock()
 
@@ -204,15 +201,15 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 			text += fmt.Sprintf("\n🪂 %s отмечен как севший", landedName)
 		}
 		ackID := t.sendAck(ctx, &bot.SendMessageParams{
-			ChatID:      m.Chat.ID,
-			Text:        text,
-			ReplyMarkup: kb,
+			ChatID: m.Chat.ID,
+			Text:   text,
 		}, "failed to confirm landing location")
 		// Drain whatever was queued for the location-sender (initiator's
 		// /landing + the bot's prompt) and clean it together with the ack.
 		// The user's location pin itself is left in the chat as a useful
 		// artefact.
 		t.finalizePendingCleanup(m.From.ID, m.Chat.ID, ackID)
+		t.refreshDashboard(ctx, m.Chat.ID)
 		return
 	}
 
@@ -229,16 +226,15 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 		}
 		t.updateFilter()
 		radius := s.TrackAreaRadius
-		kb := s.replyKeyboard()
 		t.saveState()
 		t.mu.Unlock()
 		ackID := t.sendAck(ctx, &bot.SendMessageParams{
-			ChatID:      m.Chat.ID,
-			Text:        fmt.Sprintf("📡 Зона активна: радиус %dкм", radius),
-			ReplyMarkup: kb,
+			ChatID: m.Chat.ID,
+			Text:   fmt.Sprintf("📡 Зона активна: радиус %dкм", radius),
 		}, "failed to confirm area location")
 		// Same pattern as landing: drain queue + clean ack, leave the pin.
 		t.finalizePendingCleanup(m.From.ID, m.Chat.ID, ackID)
+		t.refreshDashboard(ctx, m.Chat.ID)
 		return
 	}
 
@@ -251,7 +247,11 @@ func (t *Tracker) handleLocation(ctx context.Context, b *bot.Bot, m *models.Mess
 func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64, wipePilots bool) int {
 	slog.Info("session reset", "chat_id", chatID, "wipe_pilots", wipePilots)
 	t.mu.Lock()
+	// Delete the dashboard BEFORE stopTrackingAsync zeros DashboardMsgID;
+	// otherwise clearDashboardForReset sees msgID == 0 and the pinned dashboard
+	// lingers in the chat.
 	if t.session != nil {
+		t.clearDashboardForReset()
 		t.stopTrackingAsync()
 		t.stopRadarAsync()
 	}
@@ -287,12 +287,6 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 	t.session = newSession
 	t.updateFilter()
 	t.saveState()
-	var markup models.ReplyMarkup
-	if wipePilots {
-		markup = &models.ReplyKeyboardRemove{RemoveKeyboard: true}
-	} else {
-		markup = t.session.replyKeyboard()
-	}
 	t.mu.Unlock()
 
 	t.deleteMessagesAsync(chatID, orphanMsgIDs...)
@@ -301,11 +295,13 @@ func (t *Tracker) execSessionReset(ctx context.Context, b *bot.Bot, chatID int64
 	if wipePilots {
 		text = "Сессия сброшена. Все пилоты удалены. Используйте /start для начала."
 	}
-	return t.sendAck(ctx, &bot.SendMessageParams{
+	ackID := t.sendAck(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        text,
-		ReplyMarkup: markup,
+		ReplyMarkup: removeReplyKB,
 	}, "failed to send session_reset message")
+
+	return ackID
 }
 
 // execTrackOn starts live tracking: resets pilot statuses, connects to OGN APRS,
@@ -329,12 +325,10 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) int
 		}, "failed to send radar conflict message")
 	}
 	if s.TrackingOn {
-		kb := s.replyKeyboard()
 		t.mu.Unlock()
 		return t.sendAck(ctx, &bot.SendMessageParams{
-			ChatID:      chatID,
-			Text:        "Трекинг уже включён",
-			ReplyMarkup: kb,
+			ChatID: chatID,
+			Text:   "Трекинг уже включён",
 		}, "failed to confirm track_on")
 	}
 	// Reset pilot statuses for a fresh tracking session. Capture each pilot's
@@ -361,10 +355,10 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) int
 	// Drop the previous summary's pin (if any) before clearing its ID so the
 	// next tick sends a fresh summary and re-pins it. Unpin is fired async
 	// outside the lock to avoid blocking on a Telegram round-trip.
-	oldSummaryID := s.SummaryMsgID
-	wasPinned := s.SummaryPinned
-	s.SummaryMsgID = 0
-	s.SummaryPinned = false
+	oldSummaryID := s.DashboardMsgID
+	wasPinned := s.DashboardPinned
+	s.DashboardMsgID = 0
+	s.DashboardPinned = false
 	s.ChatID = chatID
 	// Set filter before enabling tracking so updateFilter doesn't restart goroutines.
 	t.updateFilter()
@@ -375,7 +369,6 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) int
 	s.StopCh = make(chan struct{})
 	stopCh := s.StopCh
 	aprs := t.aprs
-	kb := s.replyKeyboard()
 	t.saveState()
 	count := len(s.Tracking)
 	hasArea := s.TrackArea != nil
@@ -390,11 +383,13 @@ func (t *Tracker) execTrackOn(ctx context.Context, b *bot.Bot, chatID int64) int
 	go t.runClient(stopCh, aprs)
 	go t.sendUpdates(stopCh)
 
-	return t.sendAck(ctx, &bot.SendMessageParams{
-		ChatID:      chatID,
-		Text:        "Трекинг включён",
-		ReplyMarkup: kb,
+	ackID := t.sendAck(ctx, &bot.SendMessageParams{
+		ChatID: chatID,
+		Text:   "Трекинг включён",
 	}, "failed to confirm track_on")
+
+	t.refreshDashboard(ctx, chatID)
+	return ackID
 }
 
 // askStartChoice shows inline buttons to resume with existing pilots or start
@@ -430,12 +425,10 @@ func (t *Tracker) askTrackOffConfirm(ctx context.Context, b *bot.Bot, chatID int
 	t.mu.Lock()
 	s := t.session
 	if !s.TrackingOn {
-		kb := s.replyKeyboard()
 		t.mu.Unlock()
 		t.scheduleAck(ctx, chatID, userMsgID, &bot.SendMessageParams{
-			ChatID:      chatID,
-			Text:        "Трекинг уже выключен",
-			ReplyMarkup: kb,
+			ChatID: chatID,
+			Text:   "Трекинг уже выключен",
 		}, "failed to confirm track_off")
 		return
 	}
@@ -472,16 +465,17 @@ func (t *Tracker) execTrackOff(ctx context.Context, b *bot.Bot, chatID int64) in
 		return 0
 	}
 	t.stopTrackingAsync()
-	kb := s.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 	slog.Info("tracking off", "chat_id", chatID)
 
-	return t.sendAck(ctx, &bot.SendMessageParams{
-		ChatID:      chatID,
-		Text:        "Трекинг выключен",
-		ReplyMarkup: kb,
+	ackID := t.sendAck(ctx, &bot.SendMessageParams{
+		ChatID: chatID,
+		Text:   "Трекинг выключен",
 	}, "failed to confirm track_off")
+
+	t.refreshDashboard(ctx, chatID)
+	return ackID
 }
 
 func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
@@ -607,15 +601,16 @@ func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) int
 		}
 	}
 	t.updateFilter()
-	kb := s.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
-	return t.sendAck(ctx, &bot.SendMessageParams{
-		ChatID:      chatID,
-		Text:        "📡 Зона отключена",
-		ReplyMarkup: kb,
+	ackID := t.sendAck(ctx, &bot.SendMessageParams{
+		ChatID: chatID,
+		Text:   "📡 Зона отключена",
 	}, "failed to confirm area off")
+
+	t.refreshDashboard(ctx, chatID)
+	return ackID
 }
 
 // --- Radar mode flows ---
@@ -638,12 +633,10 @@ func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64, rad
 		}, "failed to send radar conflict message")
 	}
 	if s.RadarOn {
-		kb := s.replyKeyboard()
 		t.mu.Unlock()
 		return t.sendAck(ctx, &bot.SendMessageParams{
-			ChatID:      chatID,
-			Text:        "Радар уже включён",
-			ReplyMarkup: kb,
+			ChatID: chatID,
+			Text:   "Радар уже включён",
 		}, "failed to confirm radar on")
 	}
 
@@ -669,7 +662,6 @@ func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64, rad
 	s.RadarStopCh = make(chan struct{})
 	stopCh := s.RadarStopCh
 	aprs := t.aprs
-	kb := s.replyKeyboard()
 	areaLat, areaLon := s.TrackArea.Latitude, s.TrackArea.Longitude
 	t.mu.Unlock()
 
@@ -677,11 +669,13 @@ func (t *Tracker) execRadarOn(ctx context.Context, b *bot.Bot, chatID int64, rad
 	go t.runRadarClient(stopCh, aprs)
 	go t.sendRadarUpdates(stopCh)
 
-	return t.sendAck(ctx, &bot.SendMessageParams{
-		ChatID:      chatID,
-		Text:        fmt.Sprintf("📡 Радар включён (зона %dкм)", radiusKm),
-		ReplyMarkup: kb,
+	ackID := t.sendAck(ctx, &bot.SendMessageParams{
+		ChatID: chatID,
+		Text:   fmt.Sprintf("📡 Радар включён (зона %dкм)", radiusKm),
 	}, "failed to confirm radar on")
+
+	t.refreshDashboard(ctx, chatID)
+	return ackID
 }
 
 func (t *Tracker) execRadarOff(ctx context.Context, b *bot.Bot, chatID int64) int {
@@ -694,15 +688,16 @@ func (t *Tracker) execRadarOff(ctx context.Context, b *bot.Bot, chatID int64) in
 	t.stopRadarAsync()
 	t.aprs = client.New("N0CALL", "")
 	t.aprs.Logger = log.Default()
-	kb := s.replyKeyboard()
 	t.mu.Unlock()
 
 	slog.Info("radar off", "chat_id", chatID)
-	return t.sendAck(ctx, &bot.SendMessageParams{
-		ChatID:      chatID,
-		Text:        "📡 Радар выключен",
-		ReplyMarkup: kb,
+	ackID := t.sendAck(ctx, &bot.SendMessageParams{
+		ChatID: chatID,
+		Text:   "📡 Радар выключен",
 	}, "failed to confirm radar off")
+
+	t.refreshDashboard(ctx, chatID)
+	return ackID
 }
 
 // execRadarAskRadius prompts the user to enter a new radius for radar mode.
@@ -759,18 +754,19 @@ func (t *Tracker) execRadarSetRadius(ctx context.Context, b *bot.Bot, chatID int
 	s.RadarStopCh = make(chan struct{})
 	stopCh := s.RadarStopCh
 	aprs := t.aprs
-	kb := s.replyKeyboard()
 	t.mu.Unlock()
 
 	slog.Info("radar radius changed", "radius_km", radiusKm, "chat_id", chatID)
 	go t.runRadarClient(stopCh, aprs)
 	go t.sendRadarUpdates(stopCh)
 
-	return t.sendAck(ctx, &bot.SendMessageParams{
-		ChatID:      chatID,
-		Text:        fmt.Sprintf("📡 Радиус радара: %dкм", radiusKm),
-		ReplyMarkup: kb,
+	ackID := t.sendAck(ctx, &bot.SendMessageParams{
+		ChatID: chatID,
+		Text:   fmt.Sprintf("📡 Радиус радара: %dкм", radiusKm),
 	}, "failed to confirm radar radius")
+
+	t.refreshDashboard(ctx, chatID)
+	return ackID
 }
 
 // --- Driver flow ---
@@ -783,12 +779,10 @@ func (t *Tracker) execDriver(ctx context.Context, b *bot.Bot, chatID int64, user
 	t.mu.Lock()
 	s := t.session
 	if d, ok := s.Drivers[userID]; ok && d.MsgID != 0 {
-		kb := s.replyKeyboard()
 		t.mu.Unlock()
 		t.scheduleAck(ctx, chatID, userMsgID, &bot.SendMessageParams{
-			ChatID:      chatID,
-			Text:        "🚗 Вы уже водитель. /driver_off чтобы остановить.",
-			ReplyMarkup: kb,
+			ChatID: chatID,
+			Text:   "🚗 Вы уже водитель. /driver_off чтобы остановить.",
 		}, "failed to send driver active message")
 		return
 	}
@@ -885,18 +879,77 @@ func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, u
 	s := t.session
 	_, was := s.Drivers[userID]
 	delete(s.Drivers, userID)
-	kb := s.replyKeyboard()
 	t.mu.Unlock()
 
 	text := "🚗 Вы не водитель"
 	if was {
 		text = "🚗 Водитель отключён"
 	}
+	ackID := t.sendAck(ctx, &bot.SendMessageParams{
+		ChatID: chatID,
+		Text:   text,
+	}, "failed to confirm driver off")
+
+	t.refreshDashboard(ctx, chatID)
+	return ackID
+}
+
+// execAddNoArgsPrompt runs the "/add without arguments" flow: sets the user's
+// PendingGroup, tries to DM the user, and falls back to posting a deep-link
+// button in the group when the DM cannot be delivered. Returns the ID of the
+// in-group ack message (0 if none was sent). Extracted from cmdAdd so the
+// dashboard callback can reuse the same path.
+func (t *Tracker) execAddNoArgsPrompt(ctx context.Context, b *bot.Bot, chatID int64, userID int64) int {
+	t.mu.Lock()
+	s := t.session
+	if s == nil || s.ChatID != chatID {
+		t.mu.Unlock()
+		return 0
+	}
+	u := t.ensureUserByID(userID)
+	u.PendingGroup = s.ChatID
+	hasOGNID := u.OGNID != ""
+	ognID := u.OGNID
+	t.saveState()
+	botUsername := t.botUsername
+	groupChatID := s.ChatID
+	t.mu.Unlock()
+
+	var dmText string
+	if hasOGNID {
+		dmText = fmt.Sprintf("Ваш OGN ID: %s\nОтправьте новый ID или /confirm чтобы использовать текущий.", ognID)
+	} else {
+		dmText = "Отправьте ваш OGN ID (6-значный адрес трекера):"
+	}
+	_, dmErr := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: userID,
+		Text:   dmText,
+	})
+	if dmErr == nil {
+		// DM sent successfully — register DMChatID.
+		t.mu.Lock()
+		u.DMChatID = userID
+		t.saveState()
+		t.mu.Unlock()
+		return t.sendAck(ctx, &bot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "Написал вам в личку",
+		}, "failed to confirm DM sent in group")
+	}
+
+	// Can't send DM — show deep link button.
+	slog.Warn("failed to send DM, falling back to deep link", "user_id", userID, "err", dmErr)
+	deepLink := fmt.Sprintf("https://t.me/%s?start=add_%d", botUsername, groupChatID)
+	kb := &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{{Text: "Добавить свой трекер", URL: deepLink}},
+		},
+	}
 	return t.sendAck(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
-		Text:        text,
+		Text:        "Напишите мне в личку, чтобы добавить свой трекер",
 		ReplyMarkup: kb,
-	}, "failed to confirm driver off")
+	}, "failed to send deep link button")
 }
 
 // execPickup marks a pilot as picked up (StatusPickedUp) and confirms in the group.
@@ -932,4 +985,6 @@ func (t *Tracker) execPickup(ctx context.Context, b *bot.Bot, id string) {
 	}); err != nil {
 		slog.Error("failed to confirm pickup", "id", id, "err", err)
 	}
+
+	t.refreshDashboard(ctx, chatID)
 }

@@ -15,6 +15,12 @@ import (
 // Short 6-char IDs are expanded to all five variants for the budlist filter.
 var ognPrefixes = []string{"FLR", "OGN", "ICA", "NAV", "FNT"}
 
+// removeReplyKB is a ReplyKeyboardRemove value that tells Telegram clients to
+// hide whatever reply keyboard is currently visible. Used in /start so users
+// with the legacy bottom bar lose it the moment they restart the session,
+// without waiting for them to reopen the chat.
+var removeReplyKB = &models.ReplyKeyboardRemove{RemoveKeyboard: true}
+
 // aircraftTypes maps OGN aircraft type codes to human-readable names.
 var aircraftTypes = map[int]string{
 	0: "Unknown", 1: "Glider", 2: "Tow plane", 3: "Helicopter",
