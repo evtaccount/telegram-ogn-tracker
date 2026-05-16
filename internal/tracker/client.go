@@ -83,6 +83,115 @@ func (t *Tracker) markLabelDead(id string, err error) {
 	slog.Warn("live label gone", "id", id, "msg_id", msgID, "err", err)
 }
 
+// refreshDashboard renders the dashboard text and inline keyboard for the
+// current session state and either edits the existing dashboard message or
+// posts a new one. Idempotent: safe to call any number of times per tick and
+// from any goroutine. Handles the "edit on a dead message" path by reposting
+// and re-pinning, same semantics as patch A.
+//
+// Returns the live MessageID after the call. Must be called outside t.mu.
+func (t *Tracker) refreshDashboard(ctx context.Context, chatID int64) int {
+	t.mu.Lock()
+	if t.session == nil || t.session.ChatID != chatID {
+		t.mu.Unlock()
+		return 0
+	}
+	s := t.session
+	b := t.bot
+	dashID := s.DashboardMsgID
+	dashPinned := s.DashboardPinned
+	tracking := make(map[string]*TrackInfo, len(s.Tracking))
+	for id, info := range s.Tracking {
+		cp := *info
+		tracking[id] = &cp
+	}
+	devices := t.devices
+	tz := s.tz()
+	// We work on a shallow copy of the session header to render off-lock.
+	sCopy := *s
+	sCopy.Tracking = tracking
+	t.mu.Unlock()
+
+	if b == nil {
+		return dashID
+	}
+
+	text := buildDashboard(&sCopy, devices, tz)
+	kb := dashboardButtons(&sCopy)
+	// Pilot-specific buttons (nav, pickup) live on the dashboard too, below the
+	// action row, so the chat has one place for everything.
+	pilotKb := pilotButtons(tracking)
+	if pilotKb != nil {
+		if kb == nil {
+			kb = pilotKb
+		} else {
+			kb.InlineKeyboard = append(kb.InlineKeyboard, pilotKb.InlineKeyboard...)
+		}
+	}
+
+	newID := 0
+	if dashID != 0 {
+		_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+			ChatID:      chatID,
+			MessageID:   dashID,
+			Text:        text,
+			ReplyMarkup: kb,
+		})
+		switch {
+		case err == nil, isMessageNotModified(err):
+			newID = dashID
+		case isMessageGone(err):
+			slog.Warn("dashboard gone, will repost", "msg_id", dashID, "err", err)
+			t.mu.Lock()
+			if t.session != nil {
+				t.session.DashboardMsgID = 0
+				t.session.DashboardPinned = false
+			}
+			t.mu.Unlock()
+			dashID = 0
+			dashPinned = false
+		default:
+			slog.Error("failed to edit dashboard", "err", err)
+			newID = dashID
+		}
+	}
+	if dashID == 0 {
+		params := &bot.SendMessageParams{ChatID: chatID, Text: text}
+		if kb != nil {
+			params.ReplyMarkup = kb
+		}
+		msg, err := b.SendMessage(ctx, params)
+		if err != nil {
+			slog.Error("failed to send dashboard", "err", err)
+			return 0
+		}
+		newID = msg.ID
+		t.mu.Lock()
+		if t.session != nil {
+			t.session.DashboardMsgID = msg.ID
+		}
+		t.mu.Unlock()
+	}
+
+	if newID != 0 && !dashPinned {
+		if _, err := b.PinChatMessage(ctx, &bot.PinChatMessageParams{
+			ChatID:              chatID,
+			MessageID:           newID,
+			DisableNotification: true,
+		}); err != nil {
+			slog.Warn("failed to pin dashboard", "err", err)
+		} else {
+			slog.Info("dashboard pinned", "msg_id", newID)
+			t.mu.Lock()
+			if t.session != nil {
+				t.session.DashboardPinned = true
+			}
+			t.mu.Unlock()
+		}
+	}
+	return newID
+}
+
 // checkInactivity implements the post-silence warn-and-auto-stop policy. Age
 // is the time since the most recent beacon across tracked pilots. The method
 // holds t.mu only while touching session state; chat messages are sent without
@@ -114,17 +223,12 @@ func (t *Tracker) checkInactivity(ctx context.Context, b *bot.Bot, chatID int64,
 			t.session.InactivityWarnedAt = time.Now()
 		}
 		t.mu.Unlock()
-		if warned {
-			return false
+		if !warned {
+			slog.Info("inactivity warning surfaced", "chat_id", chatID, "age", age.Round(time.Minute))
 		}
-		slog.Info("inactivity warning sent", "chat_id", chatID, "age", age.Round(time.Minute))
-		remaining := (inactivityStopAfter - age).Round(time.Minute)
-		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: chatID,
-			Text:   fmt.Sprintf("⚠️ Нет beacon-ов уже %s. Трекинг остановится автоматически через %s, если ничего не появится.", age.Round(time.Minute), remaining),
-		}); err != nil {
-			slog.Error("failed to send inactivity warning", "err", err)
-		}
+		// The warning text appears inside the dashboard via buildDashboard,
+		// rendered by the heartbeat refresh on the next tick. No separate
+		// chat message — keeps the chat tidy.
 		return false
 	}
 	// Beacons are flowing again — clear the warning flag so silence later in
@@ -488,30 +592,12 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			continue
 		}
 		chatID := s.ChatID
-		landing := s.Landing
-		var drivers []*Coordinates
-		for _, d := range s.Drivers {
-			if d.Pos != nil {
-				cp := *d.Pos
-				drivers = append(drivers, &cp)
-			}
-		}
-		areaRadius := 0
-		if s.TrackArea != nil {
-			areaRadius = s.TrackAreaRadius
-		}
 		b := t.bot
-		dashboardMsgID := s.DashboardMsgID
-		dashboardPinned := s.DashboardPinned
 		local := make(map[string]*TrackInfo)
 		for id, info := range s.Tracking {
 			cp := *info
 			local[id] = &cp
 		}
-		// Capture renderer dependencies under the mutex so the renderer can
-		// run lock-free without racing on t.devices / session.Timezone.
-		devices := t.devices
-		tz := s.tz()
 		t.mu.Unlock()
 
 		// Heartbeat: emit a per-cycle snapshot so it's obvious from the logs
@@ -702,87 +788,9 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			slog.Info("sent location", "id", id)
 		}
 
-		// Send or update the single summary message. newSummaryID tracks
-		// whichever ID the summary now lives at — used by the pin block below
-		// to know whether we have a stable target to pin.
-		summary := buildSummary(local, landing, drivers, areaRadius, devices, tz)
-		kb := pilotButtons(local)
-		newSummaryID := 0
-		if dashboardMsgID != 0 {
-			editParams := &bot.EditMessageTextParams{
-				ChatID:    chatID,
-				MessageID: dashboardMsgID,
-				Text:      summary,
-			}
-			if kb != nil {
-				editParams.ReplyMarkup = kb
-			}
-			_, err := b.EditMessageText(ctx, editParams)
-			switch {
-			case err == nil, isMessageNotModified(err):
-				newSummaryID = dashboardMsgID
-			case isMessageGone(err):
-				// The summary message is gone (deleted, edit window closed).
-				// Clear the cached ID so the block below re-sends a fresh one
-				// on this same tick — the group needs an up-to-date summary.
-				slog.Warn("summary gone, will repost", "msg_id", dashboardMsgID, "err", err)
-				t.mu.Lock()
-				if t.session != nil {
-					t.session.DashboardMsgID = 0
-					t.session.DashboardPinned = false
-				}
-				t.mu.Unlock()
-				dashboardMsgID = 0
-			default:
-				slog.Error("failed to edit summary", "err", err)
-				// Transient — keep the ID, next tick retries.
-				newSummaryID = dashboardMsgID
-			}
-		}
-		if dashboardMsgID == 0 {
-			sendParams := &bot.SendMessageParams{
-				ChatID: chatID,
-				Text:   summary,
-			}
-			if kb != nil {
-				sendParams.ReplyMarkup = kb
-			}
-			msg, err := b.SendMessage(ctx, sendParams)
-			if err != nil {
-				slog.Error("failed to send summary", "err", err)
-			} else {
-				newSummaryID = msg.ID
-				t.mu.Lock()
-				if t.session != nil {
-					t.session.DashboardMsgID = msg.ID
-				}
-				t.mu.Unlock()
-			}
-		}
-
-		// Pin the summary so it stays visible regardless of new chat traffic
-		// or freshly-sent live-location pins. Silent pin (DisableNotification)
-		// suppresses both the push and the "Bot pinned a message" service
-		// message. Failures (e.g. missing admin rights) leave DashboardPinned
-		// false so the next tick retries; once pinned, the snapshot path
-		// short-circuits forever.
-		if newSummaryID != 0 && shouldAttemptPin(dashboardPinned, withPos) {
-			if _, err := b.PinChatMessage(ctx, &bot.PinChatMessageParams{
-				ChatID:              chatID,
-				MessageID:           newSummaryID,
-				DisableNotification: true,
-			}); err != nil {
-				slog.Warn("failed to pin summary", "err", err)
-			} else {
-				slog.Info("summary pinned", "msg_id", newSummaryID)
-				t.mu.Lock()
-				if t.session != nil && t.session.DashboardMsgID == newSummaryID {
-					t.session.DashboardPinned = true
-					t.saveState()
-				}
-				t.mu.Unlock()
-			}
-		}
+		// Refresh the dashboard. Heartbeat path; explicit state changes also
+		// call refreshDashboard directly so the UI doesn't lag a tick behind.
+		t.refreshDashboard(ctx, chatID)
 	}
 }
 
