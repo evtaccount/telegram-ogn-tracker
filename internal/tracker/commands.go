@@ -113,9 +113,14 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 	t.saveState()
 	t.mu.Unlock()
 
-	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
+	// First interaction in the chat — keep both the user's /start and the bot
+	// reply visible. The dashboard is the persistent UI, but if the bot is not
+	// an admin and pin fails, the dashboard scrolls away — this ack stays as a
+	// permanent fallback the user can refer back to. The ack also carries
+	// removeReplyKB to clear any legacy reply keyboard cached by clients.
+	t.sendAck(ctx, &bot.SendMessageParams{
 		ChatID:      m.Chat.ID,
-		Text:        "Сессия начата. Используйте /add <id> или /area.",
+		Text:        "Сессия начата. Управление — на закреплённом дашборде ниже. /add <id>, /area для настройки.",
 		ReplyMarkup: removeReplyKB,
 	}, "failed to send start message")
 
@@ -150,9 +155,11 @@ func (t *Tracker) cmdStartSession(ctx context.Context, b *bot.Bot, update *model
 	t.saveState()
 	t.mu.Unlock()
 
-	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
+	// Same reasoning as cmdStart: keep the reply visible as a fallback when the
+	// dashboard pin is unavailable.
+	t.sendAck(ctx, &bot.SendMessageParams{
 		ChatID:      m.Chat.ID,
-		Text:        "Сессия пересоздана. Все пилоты удалены. Используйте /add <id> или /area.",
+		Text:        "Сессия пересоздана. Все пилоты удалены. Управление — на закреплённом дашборде ниже.",
 		ReplyMarkup: removeReplyKB,
 	}, "failed to send start_session message")
 
