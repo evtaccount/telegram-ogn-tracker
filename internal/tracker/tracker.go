@@ -287,6 +287,7 @@ func (t *Tracker) RegisterHandlers(b *bot.Bot) {
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset_confirm", bot.MatchTypeExact, t.cbSessionResetConfirm)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset_wipe", bot.MatchTypeExact, t.cbSessionResetWipe)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "session_reset_cancel", bot.MatchTypeExact, t.cbSessionResetCancel)
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "dashboard:", bot.MatchTypePrefix, t.cbDashboardAction)
 
 	// Auto-resume tracking if it was active before restart.
 	if t.resumeOnStart && t.session != nil {
