@@ -276,7 +276,10 @@ func (t *Tracker) cbDashboardAction(ctx context.Context, b *bot.Bot, update *mod
 	case "start":
 		t.execTrackOn(ctx, b, chatID)
 	case "stop":
-		t.execTrackOff(ctx, b, chatID)
+		// Route through confirmation, matching the old reply-keyboard "⏹ Стоп"
+		// behaviour. Silently halting a live tracking session on a stray tap
+		// would be a sharp edge for the group.
+		t.askTrackOffConfirm(ctx, b, chatID, userID, 0)
 	case "list":
 		t.execList(ctx, b, chatID)
 	case "add":
@@ -295,5 +298,8 @@ func (t *Tracker) cbDashboardAction(ctx context.Context, b *bot.Bot, update *mod
 		slog.Warn("unknown dashboard action", "action", action)
 	}
 
+	// Safe to call even when an action just opened a confirm prompt or hit the
+	// default branch — refreshDashboard no-ops if the session/chatID no longer
+	// matches, and otherwise it harmlessly re-renders the current state.
 	t.refreshDashboard(ctx, chatID)
 }
