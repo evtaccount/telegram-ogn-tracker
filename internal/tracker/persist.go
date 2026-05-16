@@ -56,6 +56,14 @@ type pilotState struct {
 	// keeps editing the same label instead of orphaning it next to a fresh one.
 	LabelMsgID  int         `json:"label_msg_id,omitempty"`
 	LabelStatus PilotStatus `json:"label_status,omitempty"`
+	// LiveLocationDead / LabelDead persist the "Telegram refused to edit"
+	// verdict so a restart doesn't waste an API round-trip rediscovering a
+	// dead message.
+	LiveLocationDead bool `json:"live_location_dead,omitempty"`
+	LabelDead        bool `json:"label_dead,omitempty"`
+	// LandedFinalEditDone is set after the post-landing grace edit cycle
+	// completes, so we never repeat that edit across restarts.
+	LandedFinalEditDone bool `json:"landed_final_edit_done,omitempty"`
 }
 
 // legacySessionState represents the old format (pre-Phase 1) for migration.
@@ -98,17 +106,20 @@ func (t *Tracker) marshalStateLocked() []byte {
 			ss.Tracking = make(map[string]*pilotState, len(s.Tracking))
 			for id, info := range s.Tracking {
 				ss.Tracking[id] = &pilotState{
-					Name:             info.Name,
-					Username:         info.Username,
-					Status:           info.Status,
-					LandingTime:      info.LandingTime,
-					LandingConfirmed: info.LandingConfirmed,
-					AutoDiscovered:   info.AutoDiscovered,
-					OwnerUserID:      info.OwnerUserID,
-					MessageID:        info.MessageID,
-					LowSpeedSince:    info.LowSpeedSince,
-					LabelMsgID:       info.LabelMsgID,
-					LabelStatus:      info.LabelStatus,
+					Name:                info.Name,
+					Username:            info.Username,
+					Status:              info.Status,
+					LandingTime:         info.LandingTime,
+					LandingConfirmed:    info.LandingConfirmed,
+					AutoDiscovered:      info.AutoDiscovered,
+					OwnerUserID:         info.OwnerUserID,
+					MessageID:           info.MessageID,
+					LowSpeedSince:       info.LowSpeedSince,
+					LabelMsgID:          info.LabelMsgID,
+					LabelStatus:         info.LabelStatus,
+					LiveLocationDead:    info.LiveLocationDead,
+					LabelDead:           info.LabelDead,
+					LandedFinalEditDone: info.LandedFinalEditDone,
 				}
 			}
 		}
@@ -286,17 +297,20 @@ func (t *Tracker) loadState() bool {
 				low = time.Time{}
 			}
 			session.Tracking[id] = &TrackInfo{
-				Name:             ps.Name,
-				Username:         ps.Username,
-				Status:           ps.Status,
-				LandingTime:      ps.LandingTime,
-				LandingConfirmed: ps.LandingConfirmed,
-				AutoDiscovered:   ps.AutoDiscovered,
-				OwnerUserID:      ps.OwnerUserID,
-				MessageID:        ps.MessageID,
-				LowSpeedSince:    low,
-				LabelMsgID:       ps.LabelMsgID,
-				LabelStatus:      ps.LabelStatus,
+				Name:                ps.Name,
+				Username:            ps.Username,
+				Status:              ps.Status,
+				LandingTime:         ps.LandingTime,
+				LandingConfirmed:    ps.LandingConfirmed,
+				AutoDiscovered:      ps.AutoDiscovered,
+				OwnerUserID:         ps.OwnerUserID,
+				MessageID:           ps.MessageID,
+				LowSpeedSince:       low,
+				LabelMsgID:          ps.LabelMsgID,
+				LabelStatus:         ps.LabelStatus,
+				LiveLocationDead:    ps.LiveLocationDead,
+				LabelDead:           ps.LabelDead,
+				LandedFinalEditDone: ps.LandedFinalEditDone,
 			}
 		}
 	}

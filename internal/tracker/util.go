@@ -62,6 +62,20 @@ func isMessageNotModified(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "message is not modified")
 }
 
+// isMessageGone matches the family of Telegram responses that mean the target
+// message is permanently no longer editable: message deleted, live-location
+// expired, edit window closed. Retrying these is pure log spam — the caller
+// should mark the message as dead and stop touching it.
+func isMessageGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "message can't be edited") ||
+		strings.Contains(s, "message to edit not found") ||
+		strings.Contains(s, "MESSAGE_ID_INVALID")
+}
+
 // distanceAndBearing computes distance (km) and bearing between two points
 // using CheapRuler for fast approximate calculations at paragliding distances.
 func distanceAndBearing(lat1, lon1, lat2, lon2 float64) (distKm float64, bearing float64) {

@@ -6,6 +6,7 @@ import (
 	"log"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"ogn/client"
@@ -21,6 +22,15 @@ const (
 	liveLocationPeriod = 86400            // Telegram live-location lifetime in seconds (24h)
 	reconnectDelay     = 1 * time.Second  // initial delay before retrying after an OGN connection error
 	reconnectMaxDelay  = 60 * time.Second // ceiling for the exponential backoff
+	// inactivityWarnAfter — how long since the last beacon before posting a
+	// "no beacons, will stop soon" warning to the chat. Reset when beacons
+	// start flowing again.
+	inactivityWarnAfter = 2 * time.Hour
+	// inactivityStopAfter — how long since the last beacon before turning the
+	// tracker off automatically. Catches the common "everyone landed and we
+	// forgot to /track_off" case so the bot doesn't sit idle on an open APRS
+	// connection for days.
+	inactivityStopAfter = 8 * time.Hour
 )
 
 // nextReconnectDelay doubles the current backoff, capped at reconnectMaxDelay.
@@ -32,6 +42,99 @@ func nextReconnectDelay(d time.Duration) time.Duration {
 		return reconnectMaxDelay
 	}
 	return d
+}
+
+// markLiveLocationDead flags a pilot's live-location pin as permanently
+// uneditable after Telegram returned an isMessageGone error. The flag prevents
+// the ticker from spamming further EditMessageLiveLocation calls (and the log
+// from filling up with the same error). Logged once at WARN.
+func (t *Tracker) markLiveLocationDead(id string, err error) {
+	t.mu.Lock()
+	var msgID int
+	if t.session != nil {
+		if ti, ok := t.session.Tracking[id]; ok {
+			if ti.LiveLocationDead {
+				t.mu.Unlock()
+				return
+			}
+			ti.LiveLocationDead = true
+			msgID = ti.MessageID
+		}
+	}
+	t.mu.Unlock()
+	slog.Warn("live location gone", "id", id, "msg_id", msgID, "err", err)
+}
+
+// markLabelDead is the label-message equivalent of markLiveLocationDead.
+func (t *Tracker) markLabelDead(id string, err error) {
+	t.mu.Lock()
+	var msgID int
+	if t.session != nil {
+		if ti, ok := t.session.Tracking[id]; ok {
+			if ti.LabelDead {
+				t.mu.Unlock()
+				return
+			}
+			ti.LabelDead = true
+			msgID = ti.LabelMsgID
+		}
+	}
+	t.mu.Unlock()
+	slog.Warn("live label gone", "id", id, "msg_id", msgID, "err", err)
+}
+
+// checkInactivity implements the post-silence warn-and-auto-stop policy. Age
+// is the time since the most recent beacon across tracked pilots. The method
+// holds t.mu only while touching session state; chat messages are sent without
+// the lock. Returns true when tracking was auto-stopped (caller should exit
+// its goroutine — no further work is meaningful).
+func (t *Tracker) checkInactivity(ctx context.Context, b *bot.Bot, chatID int64, age time.Duration) (stopped bool) {
+	if age >= inactivityStopAfter {
+		t.mu.Lock()
+		if t.session == nil || !t.session.TrackingOn {
+			t.mu.Unlock()
+			return false
+		}
+		t.stopTrackingAsync()
+		t.saveState()
+		t.mu.Unlock()
+		slog.Info("tracking auto-stopped due to inactivity", "chat_id", chatID, "age", age.Round(time.Minute))
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID,
+			Text:   fmt.Sprintf("⏹ Трекинг остановлен автоматически: нет beacon-ов %s.", age.Round(time.Minute)),
+		}); err != nil {
+			slog.Error("failed to send auto-stop notice", "err", err)
+		}
+		return true
+	}
+	if age >= inactivityWarnAfter {
+		t.mu.Lock()
+		warned := t.session == nil || !t.session.InactivityWarnedAt.IsZero()
+		if !warned && t.session != nil {
+			t.session.InactivityWarnedAt = time.Now()
+		}
+		t.mu.Unlock()
+		if warned {
+			return false
+		}
+		slog.Info("inactivity warning sent", "chat_id", chatID, "age", age.Round(time.Minute))
+		remaining := (inactivityStopAfter - age).Round(time.Minute)
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID,
+			Text:   fmt.Sprintf("⚠️ Нет beacon-ов уже %s. Трекинг остановится автоматически через %s, если ничего не появится.", age.Round(time.Minute), remaining),
+		}); err != nil {
+			slog.Error("failed to send inactivity warning", "err", err)
+		}
+		return false
+	}
+	// Beacons are flowing again — clear the warning flag so silence later in
+	// the session re-triggers the policy.
+	t.mu.Lock()
+	if t.session != nil && !t.session.InactivityWarnedAt.IsZero() {
+		t.session.InactivityWarnedAt = time.Time{}
+	}
+	t.mu.Unlock()
+	return false
 }
 
 // shouldAttemptPin reports whether the summary message warrants a pin attempt
@@ -219,6 +322,13 @@ func (t *Tracker) runClient(stopCh <-chan struct{}, aprs *client.Client) {
 		}
 
 		err := aprs.Run(func(line string) {
+			// APRS server status lines ("# aprsc 2.1.x …") dominate the raw
+			// feed — they outnumber real beacons ~30:1. Drop them at source so
+			// even DEBUG logs stay readable; the parse path also rejects them,
+			// so nothing downstream cares.
+			if strings.HasPrefix(line, "#") {
+				return
+			}
 			slog.Debug("ogn line", "line", line)
 			msg, err := parser.ParsePosition(line)
 			if err != nil {
@@ -261,10 +371,11 @@ func (t *Tracker) runClient(stopCh <-chan struct{}, aprs *client.Client) {
 				// Useful when debugging "why isn't my id showing": confirms the
 				// beacon reaches us but no Tracking entry matches.
 				slog.Debug("ogn beacon not tracked", "id", id, "callsign", origID)
-			} else if info.Status == StatusPickedUp {
-				slog.Debug("ogn beacon dropped: pilot picked up", "id", id)
-			} else if info.Status == StatusLanded && info.LandingConfirmed {
-				slog.Debug("ogn beacon dropped: landing confirmed", "id", id)
+			} else if info.Status == StatusPickedUp || (info.Status == StatusLanded && info.LandingConfirmed) {
+				// Pilot is no longer of interest (picked up or confirmed landed)
+				// — silently drop. Logging every beacon here adds hundreds of
+				// debug lines per session for no diagnostic value; the status
+				// transition itself is already logged when it happens.
 			} else {
 				slog.Debug("ogn beacon matched",
 					"id", id, "callsign", origID,
@@ -354,12 +465,21 @@ func (t *Tracker) sendLandingAlert(e *landingEvent, chatID int64) {
 func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 	ticker := time.NewTicker(updateInterval)
 	defer ticker.Stop()
+	// Per-cycle heartbeat counter: stats are logged once every statsLogEvery
+	// cycles, ~5 min at 30s ticks. The first cycle (cycleN==0) also logs so
+	// startup snapshot is visible.
+	const statsLogEvery = 10
+	var cycleN int
+	// lastStats captures the previous heartbeat so we can also log on change,
+	// not just on the timed cadence.
+	var lastStats [3]int // tracked, withPos, withoutPos
 	for {
 		select {
 		case <-stopCh:
 			return
 		case <-ticker.C:
 		}
+		cycleN++
 
 		t.mu.Lock()
 		s := t.session
@@ -409,21 +529,39 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 				withoutPos++
 			}
 		}
-		stats := []any{
-			"tracked", len(local),
-			"with_position", withPos,
-			"without_position", withoutPos,
+		// Log a per-cycle heartbeat snapshot, but throttle it: once per
+		// statsLogEvery cycles, plus on any state change. That cuts the steady-
+		// state debug volume by ~10× without losing visibility into transitions
+		// (a new beacon arriving, a pilot dropping off, etc).
+		cur := [3]int{len(local), withPos, withoutPos}
+		if cycleN == 1 || cycleN%statsLogEvery == 0 || cur != lastStats {
+			stats := []any{
+				"tracked", cur[0],
+				"with_position", cur[1],
+				"without_position", cur[2],
+			}
+			if !latest.IsZero() {
+				stats = append(stats, "last_beacon_age", time.Since(latest).Round(time.Second))
+			}
+			slog.Debug("ogn cycle stats", stats...)
+			lastStats = cur
 		}
-		if !latest.IsZero() {
-			stats = append(stats, "last_beacon_age", time.Since(latest).Round(time.Second))
-		}
-		slog.Debug("ogn cycle stats", stats...)
 
 		if b == nil || len(local) == 0 {
 			continue
 		}
 
 		ctx := context.Background()
+
+		// Inactivity policy: warn the chat once after inactivityWarnAfter and
+		// auto-stop after inactivityStopAfter. Only runs once we have seen at
+		// least one beacon during this session — a freshly-started tracker with
+		// nothing yet to compare against is left alone (operator's call to make).
+		if !latest.IsZero() {
+			if stopped := t.checkInactivity(ctx, b, chatID, time.Since(latest)); stopped {
+				return
+			}
+		}
 
 		// Update per-pilot live locations on the map (skip auto-discovered).
 		// Each pilot has a paired text label that names them; the label is
@@ -440,15 +578,15 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			// the live-location pin (picked up / confirmed landing). Without
 			// this the emoji would be frozen at whatever it was at the last
 			// position update.
-			if info.LabelMsgID != 0 && info.Status != info.LabelStatus {
+			if info.LabelMsgID != 0 && !info.LabelDead && info.Status != info.LabelStatus {
 				newText := pilotLabelText(id, info)
-				if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+				_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
 					ChatID:    chatID,
 					MessageID: info.LabelMsgID,
 					Text:      newText,
-				}); err != nil && !isMessageNotModified(err) {
-					slog.Error("failed to edit pilot label", "id", id, "err", err)
-				} else {
+				})
+				switch {
+				case err == nil, isMessageNotModified(err):
 					t.mu.Lock()
 					if t.session != nil {
 						if ti, ok := t.session.Tracking[id]; ok {
@@ -456,19 +594,29 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 						}
 					}
 					t.mu.Unlock()
+				case isMessageGone(err):
+					t.markLabelDead(id, err)
+				default:
+					slog.Error("failed to edit pilot label", "id", id, "err", err)
 				}
 			}
 
 			if info.Position == nil || info.Status == StatusPickedUp {
 				continue
 			}
-			if info.Status == StatusLanded && info.LandingConfirmed {
+			// After landing we do one final edit (to move the pin to the actual
+			// landing spot) and then freeze. LandedFinalEditDone is set after
+			// that single edit so subsequent cycles short-circuit here.
+			if info.Status == StatusLanded && (info.LandingConfirmed || info.LandedFinalEditDone) {
 				continue
 			}
 
 			heading := chooseHeading(info.Position.Course, info.LastHeading, info.Position.GroundSpeed)
 
 			if info.MessageID != 0 {
+				if info.LiveLocationDead {
+					continue
+				}
 				editParams := &bot.EditMessageLiveLocationParams{
 					ChatID:    chatID,
 					MessageID: info.MessageID,
@@ -478,8 +626,25 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 				if heading > 0 {
 					editParams.Heading = heading
 				}
-				if _, err := b.EditMessageLiveLocation(ctx, editParams); err != nil && !isMessageNotModified(err) {
+				_, err := b.EditMessageLiveLocation(ctx, editParams)
+				switch {
+				case err == nil, isMessageNotModified(err):
+					// no-op — edit accepted or message was identical
+				case isMessageGone(err):
+					t.markLiveLocationDead(id, err)
+				default:
 					slog.Error("failed to edit location", "id", id, "err", err)
+				}
+				// If this was the post-landing grace cycle, record that we did
+				// it so the next tick stops editing entirely.
+				if info.Status == StatusLanded && !info.LandedFinalEditDone {
+					t.mu.Lock()
+					if t.session != nil {
+						if ti, ok := t.session.Tracking[id]; ok {
+							ti.LandedFinalEditDone = true
+						}
+					}
+					t.mu.Unlock()
 				}
 				continue
 			}
@@ -552,15 +717,29 @@ func (t *Tracker) sendUpdates(stopCh <-chan struct{}) {
 			if kb != nil {
 				editParams.ReplyMarkup = kb
 			}
-			if _, err := b.EditMessageText(ctx, editParams); err != nil && !isMessageNotModified(err) {
+			_, err := b.EditMessageText(ctx, editParams)
+			switch {
+			case err == nil, isMessageNotModified(err):
+				newSummaryID = summaryMsgID
+			case isMessageGone(err):
+				// The summary message is gone (deleted, edit window closed).
+				// Clear the cached ID so the block below re-sends a fresh one
+				// on this same tick — the group needs an up-to-date summary.
+				slog.Warn("summary gone, will repost", "msg_id", summaryMsgID, "err", err)
+				t.mu.Lock()
+				if t.session != nil {
+					t.session.SummaryMsgID = 0
+					t.session.SummaryPinned = false
+				}
+				t.mu.Unlock()
+				summaryMsgID = 0
+			default:
 				slog.Error("failed to edit summary", "err", err)
+				// Transient — keep the ID, next tick retries.
+				newSummaryID = summaryMsgID
 			}
-			// Treat the message as still alive even on transient edit errors —
-			// next tick will retry the edit. Hard "message not found" cases
-			// will surface as repeated warnings; addressed separately if it
-			// becomes noisy.
-			newSummaryID = summaryMsgID
-		} else {
+		}
+		if summaryMsgID == 0 {
 			sendParams := &bot.SendMessageParams{
 				ChatID: chatID,
 				Text:   summary,
@@ -728,10 +907,23 @@ func (t *Tracker) sendRadarUpdates(stopCh <-chan struct{}) {
 			if kb != nil {
 				ep.ReplyMarkup = kb
 			}
-			if _, err := b.EditMessageText(ctx, ep); err != nil && !isMessageNotModified(err) {
+			_, err := b.EditMessageText(ctx, ep)
+			switch {
+			case err == nil, isMessageNotModified(err):
+				// no-op
+			case isMessageGone(err):
+				slog.Warn("radar summary gone, will repost", "msg_id", radarMsgID, "err", err)
+				t.mu.Lock()
+				if t.session != nil {
+					t.session.RadarMsgID = 0
+				}
+				t.mu.Unlock()
+				radarMsgID = 0
+			default:
 				slog.Error("failed to edit radar summary", "err", err)
 			}
-		} else {
+		}
+		if radarMsgID == 0 {
 			sp := &bot.SendMessageParams{
 				ChatID: chatID,
 				Text:   summary,

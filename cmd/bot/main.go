@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	// Embed the IANA tzdata so /tz works on minimal images (alpine without tzdata pkg).
 	_ "time/tzdata"
@@ -19,6 +21,39 @@ import (
 
 	"telegram-ogn-tracker/internal/tracker"
 )
+
+// stdlogClassifier wraps an slog.Handler so stdlib `log` output (used by the
+// OGN client and go-telegram-bot internals) lands at the right slog level
+// instead of being uniformly INFO.
+//
+// Rationale: ogn-client emits "Sent keepalive" via log.Printf every ~4 min.
+// That single line was ~95% of INFO traffic in 2026-05's log audit and drowned
+// out everything actionable. Reclassifying it to DEBUG buys us a clean INFO
+// stream without touching the upstream library.
+//
+// Patterns are matched substring-style — string match is fragile but the
+// alternative (typed errors) requires changes in libraries we don't own.
+type stdlogClassifier struct{ h slog.Handler }
+
+func (w stdlogClassifier) Write(p []byte) (int, error) {
+	s := strings.TrimRight(string(p), "\n")
+	lvl := slog.LevelInfo
+	switch {
+	case strings.Contains(s, "Sent keepalive"):
+		lvl = slog.LevelDebug
+	case strings.Contains(s, "[ERROR]"):
+		// go-telegram-bot logs its own errors as "[TGBOT] [ERROR] …" via the
+		// shared stdlog. Most are transient (502s, network blips); WARN keeps
+		// them visible without polluting ERROR-grep audits.
+		lvl = slog.LevelWarn
+	}
+	if !w.h.Enabled(context.Background(), lvl) {
+		return len(p), nil
+	}
+	r := slog.NewRecord(time.Now(), lvl, s, 0)
+	_ = w.h.Handle(context.Background(), r)
+	return len(p), nil
+}
 
 // defaultLogPath is the destination used when LOG_FILE is unset.
 // Resolved relative to the process's working directory; in Docker this
@@ -60,9 +95,12 @@ func main() {
 	handler := slog.NewTextHandler(logOut, &slog.HandlerOptions{Level: level})
 	slog.SetDefault(slog.New(handler))
 	// Pipe stdlib log through slog so any third-party code that uses log.Printf
-	// (notably the OGN client's logger field) ends up in the same structured stream.
+	// (notably the OGN client's logger field) ends up in the same structured
+	// stream. Lines pass through stdlogClassifier first, which demotes known
+	// low-signal patterns (keepalives) and promotes known errors (TGBOT) before
+	// the slog handler decides whether to emit.
 	log.SetFlags(0)
-	log.SetOutput(slog.NewLogLogger(handler, slog.LevelInfo).Writer())
+	log.SetOutput(stdlogClassifier{h: handler})
 	slog.Info("logger initialised", "destination", logDest, "level", level.String())
 
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
