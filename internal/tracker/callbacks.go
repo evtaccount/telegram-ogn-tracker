@@ -294,7 +294,7 @@ func (t *Tracker) cbDashboardAction(ctx context.Context, b *bot.Bot, update *mod
 	case "list":
 		t.execList(ctx, b, chatID)
 	case "add":
-		t.execAddNoArgsPrompt(ctx, b, chatID, userID)
+		t.execAddNoArgsPrompt(ctx, b, chatID, userID, 0)
 	case "area":
 		t.execArea(ctx, b, chatID, defaultAreaRadius, userID, 0)
 	case "driver":

@@ -216,12 +216,7 @@ func (t *Tracker) cmdAdd(ctx context.Context, b *bot.Bot, update *models.Update)
 	t.mu.Lock()
 	t.ensureUser(m.From)
 	t.mu.Unlock()
-	ackID := t.execAddNoArgsPrompt(ctx, b, m.Chat.ID, m.From.ID)
-	if ackID != 0 {
-		t.mu.Lock()
-		t.appendPendingCleanup(m.From.ID, m.ID, ackID)
-		t.mu.Unlock()
-	}
+	t.execAddNoArgsPrompt(ctx, b, m.Chat.ID, m.From.ID, m.ID)
 }
 
 func (t *Tracker) cmdRemove(ctx context.Context, b *bot.Bot, update *models.Update) {

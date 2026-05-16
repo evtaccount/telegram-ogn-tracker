@@ -543,8 +543,9 @@ func (t *Tracker) execList(ctx context.Context, b *bot.Bot, chatID int64) {
 func (t *Tracker) execLanding(ctx context.Context, b *bot.Bot, chatID int64, userID int64, userMsgID int) {
 	t.mu.Lock()
 	s := t.session
+	expiry := time.Now().Add(waitTimeout)
 	s.WaitingLanding = true
-	s.LandingExpiry = time.Now().Add(waitTimeout)
+	s.LandingExpiry = expiry
 	s.ChatID = chatID
 	t.mu.Unlock()
 
@@ -557,6 +558,27 @@ func (t *Tracker) execLanding(ctx context.Context, b *bot.Bot, chatID int64, use
 		t.appendPendingCleanup(userID, userMsgID, promptID)
 		t.mu.Unlock()
 	}
+
+	// Without this watchdog the WaitingLanding flag stays true forever if the
+	// user never sends a pin, and the prompt orphans in the chat.
+	go t.landingWaitTimeout(expiry, userID, chatID)
+}
+
+// landingWaitTimeout clears WaitingLanding and sweeps the queued prompt out of
+// the chat if the originator never sent a location. Identity check uses the
+// expiry value (functions as a generation marker): if /landing was re-issued
+// in the meantime, the new wait owns its own expiry and is left alone.
+func (t *Tracker) landingWaitTimeout(expiry time.Time, userID int64, chatID int64) {
+	time.Sleep(time.Until(expiry) + time.Second)
+	t.mu.Lock()
+	if t.session == nil || !t.session.WaitingLanding || !t.session.LandingExpiry.Equal(expiry) {
+		t.mu.Unlock()
+		return
+	}
+	t.session.WaitingLanding = false
+	t.mu.Unlock()
+	slog.Info("landing wait timed out", "user_id", userID)
+	t.finalizePendingCleanup(userID, chatID)
 }
 
 // execArea prompts the user to send the area center as a static location pin
@@ -565,8 +587,9 @@ func (t *Tracker) execLanding(ctx context.Context, b *bot.Bot, chatID int64, use
 func (t *Tracker) execArea(ctx context.Context, b *bot.Bot, chatID int64, radiusKm int, userID int64, userMsgID int) {
 	t.mu.Lock()
 	s := t.session
+	expiry := time.Now().Add(waitTimeout)
 	s.WaitingArea = true
-	s.AreaExpiry = time.Now().Add(waitTimeout)
+	s.AreaExpiry = expiry
 	s.TrackAreaRadius = radiusKm
 	s.ChatID = chatID
 	t.mu.Unlock()
@@ -580,6 +603,23 @@ func (t *Tracker) execArea(ctx context.Context, b *bot.Bot, chatID int64, radius
 		t.appendPendingCleanup(userID, userMsgID, promptID)
 		t.mu.Unlock()
 	}
+
+	go t.areaWaitTimeout(expiry, userID, chatID)
+}
+
+// areaWaitTimeout mirrors landingWaitTimeout for the area-center wait. See
+// landingWaitTimeout for the rationale.
+func (t *Tracker) areaWaitTimeout(expiry time.Time, userID int64, chatID int64) {
+	time.Sleep(time.Until(expiry) + time.Second)
+	t.mu.Lock()
+	if t.session == nil || !t.session.WaitingArea || !t.session.AreaExpiry.Equal(expiry) {
+		t.mu.Unlock()
+		return
+	}
+	t.session.WaitingArea = false
+	t.mu.Unlock()
+	slog.Info("area wait timed out", "user_id", userID)
+	t.finalizePendingCleanup(userID, chatID)
 }
 
 func (t *Tracker) execAreaOff(ctx context.Context, b *bot.Bot, chatID int64) int {
@@ -897,9 +937,14 @@ func (t *Tracker) execDriverOff(ctx context.Context, b *bot.Bot, chatID int64, u
 // execAddNoArgsPrompt runs the "/add without arguments" flow: sets the user's
 // PendingGroup, tries to DM the user, and falls back to posting a deep-link
 // button in the group when the DM cannot be delivered. Returns the ID of the
-// in-group ack message (0 if none was sent). Extracted from cmdAdd so the
-// dashboard callback can reuse the same path.
-func (t *Tracker) execAddNoArgsPrompt(ctx context.Context, b *bot.Bot, chatID int64, userID int64) int {
+// in-group ack message (0 if none was sent).
+//
+// userMsgID is the triggering /add command (or 0 for dashboard-callback entry).
+// The ack and userMsgID are queued together via PendingCleanup so the DM
+// bridge's eventual "Добавлен" reply can sweep them all out as one batch —
+// without this, the deep-link button orphans in the chat forever when invoked
+// from the dashboard callback.
+func (t *Tracker) execAddNoArgsPrompt(ctx context.Context, b *bot.Bot, chatID int64, userID int64, userMsgID int) int {
 	t.mu.Lock()
 	s := t.session
 	if s == nil || s.ChatID != chatID {
@@ -925,31 +970,38 @@ func (t *Tracker) execAddNoArgsPrompt(ctx context.Context, b *bot.Bot, chatID in
 		ChatID: userID,
 		Text:   dmText,
 	})
+	var ackID int
 	if dmErr == nil {
 		// DM sent successfully — register DMChatID.
 		t.mu.Lock()
 		u.DMChatID = userID
 		t.saveState()
 		t.mu.Unlock()
-		return t.sendAck(ctx, &bot.SendMessageParams{
+		ackID = t.sendAck(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
 			Text:   "Написал вам в личку",
 		}, "failed to confirm DM sent in group")
+	} else {
+		// Can't send DM — show deep link button.
+		slog.Warn("failed to send DM, falling back to deep link", "user_id", userID, "err", dmErr)
+		deepLink := fmt.Sprintf("https://t.me/%s?start=add_%d", botUsername, groupChatID)
+		kb := &models.InlineKeyboardMarkup{
+			InlineKeyboard: [][]models.InlineKeyboardButton{
+				{{Text: "Добавить свой трекер", URL: deepLink}},
+			},
+		}
+		ackID = t.sendAck(ctx, &bot.SendMessageParams{
+			ChatID:      chatID,
+			Text:        "Напишите мне в личку, чтобы добавить свой трекер",
+			ReplyMarkup: kb,
+		}, "failed to send deep link button")
 	}
-
-	// Can't send DM — show deep link button.
-	slog.Warn("failed to send DM, falling back to deep link", "user_id", userID, "err", dmErr)
-	deepLink := fmt.Sprintf("https://t.me/%s?start=add_%d", botUsername, groupChatID)
-	kb := &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: "Добавить свой трекер", URL: deepLink}},
-		},
+	if ackID != 0 && userID != 0 {
+		t.mu.Lock()
+		t.appendPendingCleanup(userID, userMsgID, ackID)
+		t.mu.Unlock()
 	}
-	return t.sendAck(ctx, &bot.SendMessageParams{
-		ChatID:      chatID,
-		Text:        "Напишите мне в личку, чтобы добавить свой трекер",
-		ReplyMarkup: kb,
-	}, "failed to send deep link button")
+	return ackID
 }
 
 // execPickup marks a pilot as picked up (StatusPickedUp) and confirms in the group.
