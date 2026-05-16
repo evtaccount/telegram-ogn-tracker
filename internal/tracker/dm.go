@@ -231,7 +231,6 @@ func (t *Tracker) cmdConfirm(ctx context.Context, b *bot.Bot, update *models.Upd
 
 	u.PendingGroup = 0
 	t.updateFilter()
-	kb := s.replyKeyboard()
 	dmKb := t.dmReplyKeyboard(u.UserID)
 	t.saveState()
 	t.mu.Unlock()
@@ -254,13 +253,13 @@ func (t *Tracker) cmdConfirm(ctx context.Context, b *bot.Bot, update *models.Upd
 		label = id + " (" + name + ")"
 	}
 	groupAckID := t.sendAck(ctx, &bot.SendMessageParams{
-		ChatID:      groupChatID,
-		Text:        "Добавлен " + label,
-		ReplyMarkup: kb,
+		ChatID: groupChatID,
+		Text:   "Добавлен " + label,
 	}, "failed to confirm in group")
 	// Same finalize as handleDMText: drain queued (cmd + "Написал в личку")
 	// for this user and clean together with the group ack.
 	t.finalizePendingCleanup(m.From.ID, groupChatID, groupAckID)
+	t.refreshDashboard(ctx, groupChatID)
 }
 
 // execDMLanding initiates the landing flow from a private chat.
@@ -424,7 +423,6 @@ func (t *Tracker) handleDMLanding(ctx context.Context, b *bot.Bot, m *models.Mes
 	}
 
 	groupChatID := s.ChatID
-	groupKb := s.replyKeyboard()
 	dmKb := t.dmReplyKeyboard(m.From.ID)
 	t.saveState()
 	t.mu.Unlock()
@@ -453,10 +451,11 @@ func (t *Tracker) handleDMLanding(ctx context.Context, b *bot.Bot, m *models.Mes
 		groupText += fmt.Sprintf("\n🪂 %s сел", landedName)
 	}
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID:      groupChatID,
-		Text:        groupText,
-		ReplyMarkup: groupKb,
+		ChatID: groupChatID,
+		Text:   groupText,
 	}); err != nil {
 		slog.Error("failed to notify group about DM landing", "err", err)
 	}
+
+	t.refreshDashboard(ctx, groupChatID)
 }

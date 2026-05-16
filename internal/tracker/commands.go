@@ -108,15 +108,16 @@ func (t *Tracker) cmdStart(ctx context.Context, b *bot.Bot, update *models.Updat
 		Tracking: make(map[string]*TrackInfo),
 		Drivers:  make(map[int64]*DriverInfo),
 	}
-	kb := t.session.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
 	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 		ChatID:      m.Chat.ID,
 		Text:        "Сессия начата. Используйте /add <id> или /area.",
-		ReplyMarkup: kb,
+		ReplyMarkup: removeReplyKB,
 	}, "failed to send start message")
+
+	t.refreshDashboard(ctx, m.Chat.ID)
 }
 
 // cmdStartSession unconditionally creates a fresh session in the current group
@@ -142,15 +143,16 @@ func (t *Tracker) cmdStartSession(ctx context.Context, b *bot.Bot, update *model
 		Tracking: make(map[string]*TrackInfo),
 		Drivers:  make(map[int64]*DriverInfo),
 	}
-	kb := t.session.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
 	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
 		ChatID:      m.Chat.ID,
 		Text:        "Сессия пересоздана. Все пилоты удалены. Используйте /add <id> или /area.",
-		ReplyMarkup: kb,
+		ReplyMarkup: removeReplyKB,
 	}, "failed to send start_session message")
+
+	t.refreshDashboard(ctx, m.Chat.ID)
 }
 
 func (t *Tracker) cmdSessionReset(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -248,17 +250,17 @@ func (t *Tracker) cmdRemove(ctx context.Context, b *bot.Bot, update *models.Upda
 	}
 	delete(s.Tracking, id)
 	t.updateFilter()
-	kb := s.replyKeyboard()
 	t.saveState()
 	t.mu.Unlock()
 
 	t.deleteMessagesAsync(m.Chat.ID, orphanIDs...)
 
 	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
-		ChatID:      m.Chat.ID,
-		Text:        "Удалён " + id,
-		ReplyMarkup: kb,
+		ChatID: m.Chat.ID,
+		Text:   "Удалён " + id,
 	}, "failed to confirm remove")
+
+	t.refreshDashboard(ctx, m.Chat.ID)
 }
 
 func (t *Tracker) cmdTrackOn(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -314,17 +316,12 @@ func (t *Tracker) cmdStatus(ctx context.Context, b *bot.Bot, update *models.Upda
 	if t.session != nil {
 		count = len(t.session.Tracking)
 	}
-	var kb *models.ReplyKeyboardMarkup
-	if t.session != nil {
-		kb = t.session.replyKeyboard()
-	}
 	t.mu.Unlock()
 
 	text := fmt.Sprintf("Трекинг %s. Адресов: %d.", status, count)
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID:      m.Chat.ID,
-		Text:        text,
-		ReplyMarkup: kb,
+		ChatID: m.Chat.ID,
+		Text:   text,
 	}); err != nil {
 		slog.Error("failed to send status", "err", err)
 	}
@@ -383,6 +380,8 @@ func (t *Tracker) cmdTz(ctx context.Context, b *bot.Bot, update *models.Update) 
 		ChatID: m.Chat.ID,
 		Text:   fmt.Sprintf("Часовой пояс: %s (сейчас: %s)", loc.String(), now),
 	}, "failed to confirm tz")
+
+	t.refreshDashboard(ctx, m.Chat.ID)
 }
 
 func (t *Tracker) cmdHelp(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -441,11 +440,9 @@ func (t *Tracker) cmdDebugWipe(ctx context.Context, b *bot.Bot, update *models.U
 	t.mu.Unlock()
 
 	t.scheduleAck(ctx, m.Chat.ID, m.ID, &bot.SendMessageParams{
-		ChatID: m.Chat.ID,
-		Text:   "Все данные бота полностью очищены.",
-		ReplyMarkup: &models.ReplyKeyboardRemove{
-			RemoveKeyboard: true,
-		},
+		ChatID:      m.Chat.ID,
+		Text:        "Все данные бота полностью очищены.",
+		ReplyMarkup: removeReplyKB,
 	}, "failed to send wipe confirmation")
 }
 

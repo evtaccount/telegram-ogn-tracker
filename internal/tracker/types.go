@@ -4,8 +4,6 @@ import (
 	"time"
 
 	"ogn/parser"
-
-	"github.com/go-telegram/bot/models"
 )
 
 // PilotStatus represents the current state of a tracked pilot.
@@ -154,69 +152,6 @@ func (s *GroupSession) tz() *time.Location {
 		return s.Timezone
 	}
 	return time.UTC
-}
-
-// replyKeyboard returns an inline keyboard based on current session state.
-// Must be called with t.mu held.
-func (s *GroupSession) replyKeyboard() *models.ReplyKeyboardMarkup {
-	if s == nil {
-		return nil
-	}
-	hasContent := len(s.Tracking) > 0 || s.TrackArea != nil
-
-	if s.RadarOn {
-		return &models.ReplyKeyboardMarkup{
-			Keyboard: [][]models.KeyboardButton{
-				{
-					{Text: "⏹ Радар стоп"},
-					{Text: "📡 Радиус"},
-				},
-			},
-			ResizeKeyboard: true,
-		}
-	}
-
-	if s.TrackingOn {
-		areaText := "📡 Зона"
-		if s.TrackArea != nil {
-			areaText = "📡 Зона ✕"
-		}
-		return &models.ReplyKeyboardMarkup{
-			Keyboard: [][]models.KeyboardButton{
-				{
-					{Text: "⏹ Стоп"},
-					{Text: "📋 Список"},
-				},
-				{
-					{Text: areaText},
-					{Text: "🚗 Водитель"},
-				},
-			},
-			ResizeKeyboard: true,
-		}
-	}
-	var rows [][]models.KeyboardButton
-	if hasContent {
-		row1 := []models.KeyboardButton{
-			{Text: "▶️ Старт"},
-			{Text: "📋 Список"},
-			{Text: "🔄 Завершить"},
-		}
-		rows = append(rows, row1)
-		if s.TrackArea != nil {
-			rows = append(rows, []models.KeyboardButton{{Text: "📡 Радар"}})
-		}
-	} else {
-		rows = append(rows, []models.KeyboardButton{
-			{Text: "➕ Добавить"},
-			{Text: "📡 Зона"},
-			{Text: "🔄 Завершить"},
-		})
-	}
-	return &models.ReplyKeyboardMarkup{
-		Keyboard:       rows,
-		ResizeKeyboard: true,
-	}
 }
 
 // UserInfo represents a known user across sessions.

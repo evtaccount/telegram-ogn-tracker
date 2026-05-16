@@ -542,7 +542,6 @@ func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Messag
 	u.OGNID = id
 	u.PendingGroup = 0
 	t.updateFilter()
-	kb := s.replyKeyboard()
 	dmKb := t.dmReplyKeyboard(u.UserID)
 	t.saveState()
 	t.mu.Unlock()
@@ -565,11 +564,11 @@ func (t *Tracker) handleDMText(ctx context.Context, b *bot.Bot, m *models.Messag
 		label = id + " (" + name + ")"
 	}
 	groupAckID := t.sendAck(ctx, &bot.SendMessageParams{
-		ChatID:      groupChatID,
-		Text:        "Добавлен " + label,
-		ReplyMarkup: kb,
+		ChatID: groupChatID,
+		Text:   "Добавлен " + label,
 	}, "failed to confirm add in group")
 	// Finalize the /add no-arg chain: drain (group cmd + "Написал в личку")
 	// queued under this user, append the group ack, schedule batch cleanup.
 	t.finalizePendingCleanup(m.From.ID, groupChatID, groupAckID)
+	t.refreshDashboard(ctx, groupChatID)
 }

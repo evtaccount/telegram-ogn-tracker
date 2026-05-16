@@ -1,12 +1,12 @@
 # Graph Report - /Users/EVT/Developer/pet_projects/telegram-ogn-tracker  (2026-05-16)
 
 ## Corpus Check
-- 14 files · ~44,828 words
+- 14 files · ~55,499 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 201 nodes · 571 edges · 21 communities detected
-- Extraction: 48% EXTRACTED · 52% INFERRED · 0% AMBIGUOUS · INFERRED: 298 edges (avg confidence: 0.8)
+- 209 nodes · 604 edges · 21 communities detected
+- Extraction: 47% EXTRACTED · 53% INFERRED · 0% AMBIGUOUS · INFERRED: 320 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -33,7 +33,7 @@
 - [[_COMMUNITY_Community 20|Community 20]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `Tracker` - 103 edges
+1. `Tracker` - 107 edges
 2. `commandArgs()` - 9 edges
 3. `shortID()` - 8 edges
 4. `formatTrackText()` - 7 edges
@@ -41,20 +41,20 @@
 6. `main()` - 6 edges
 7. `formatDDBInfo()` - 6 edges
 8. `isPrivateChat()` - 6 edges
-9. `TestPendingCleanupQueue()` - 6 edges
-10. `isValidShortID()` - 5 edges
+9. `buildSummary()` - 6 edges
+10. `pilotButtons()` - 6 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `TestShortID()` --calls--> `shortID()`  [INFERRED]
-  /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/tracker_test.go → /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/util.go
-- `TestIsValidShortID()` --calls--> `isValidShortID()`  [INFERRED]
-  /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/tracker_test.go → /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/util.go
-- `TestCommandArgs()` --calls--> `commandArgs()`  [INFERRED]
-  /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/tracker_test.go → /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/util.go
-- `TestDistanceAndBearing()` --calls--> `distanceAndBearing()`  [INFERRED]
-  /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/tracker_test.go → /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/util.go
-- `TestFormatDDBInfo()` --calls--> `formatDDBInfo()`  [INFERRED]
-  /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/tracker_test.go → /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/util.go
+- `shortID()` --calls--> `TestShortID()`  [INFERRED]
+  /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/util.go → /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/tracker_test.go
+- `isValidShortID()` --calls--> `TestIsValidShortID()`  [INFERRED]
+  /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/util.go → /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/tracker_test.go
+- `isMessageNotModified()` --calls--> `TestIsMessageNotModified()`  [INFERRED]
+  /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/util.go → /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/tracker_test.go
+- `isMessageGone()` --calls--> `TestIsMessageGone()`  [INFERRED]
+  /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/util.go → /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/tracker_test.go
+- `formatDDBInfo()` --calls--> `TestFormatDDBInfo()`  [INFERRED]
+  /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/util.go → /Users/EVT/Developer/pet_projects/telegram-ogn-tracker/internal/tracker/tracker_test.go
 
 ## Hyperedges (group relationships)
 - **Tracking goroutine lifecycle trio (filter + APRS + ticker)** — tracker_updatefilter, client_runclient, client_sendupdates [EXTRACTED 0.95]
@@ -64,36 +64,36 @@
 ## Communities
 
 ### Community 0 - "Community 0"
-Cohesion: 0.07
-Nodes (38): buildFilter(), nextReconnectDelay(), shouldAttemptPin(), buildRadarSummary(), buildSummary(), formatTrackText(), nearestDriver(), pilotButtons() (+30 more)
+Cohesion: 0.05
+Nodes (31): buildFilter(), nextReconnectDelay(), shouldAttemptPin(), updateLandingState(), writeStateBytes(), appState, landingEvent, legacySessionState (+23 more)
 
 ### Community 1 - "Community 1"
-Cohesion: 0.13
-Nodes (3): deleteCallbackMessage(), TestPendingCleanupQueue(), Tracker
+Cohesion: 0.1
+Nodes (27): buildDashboard(), buildRadarSummary(), buildSummary(), dashboardButtons(), formatTrackText(), nearestDriver(), pilotButtons(), radarButtons() (+19 more)
 
 ### Community 2 - "Community 2"
-Cohesion: 0.21
-Nodes (1): isPrivateChat()
+Cohesion: 0.16
+Nodes (3): TestIsAllowedChat(), Tracker, commandArgs()
 
 ### Community 3 - "Community 3"
-Cohesion: 0.09
-Nodes (14): stdlogClassifier, main(), openLogSink(), writeStateBytes(), appState, legacySessionState, NewTracker(), parseAllowedChats() (+6 more)
+Cohesion: 0.22
+Nodes (3): isPrivateChat(), isValidShortID(), shortID()
 
 ### Community 4 - "Community 4"
-Cohesion: 0.22
-Nodes (3): commandArgs(), isValidShortID(), shortID()
+Cohesion: 0.17
+Nodes (2): deleteCallbackMessage(), TestPendingCleanupQueue()
 
 ### Community 5 - "Community 5"
-Cohesion: 0.21
-Nodes (1): isGroupChat()
+Cohesion: 0.18
+Nodes (0): 
 
 ### Community 6 - "Community 6"
-Cohesion: 0.2
-Nodes (7): Coordinates, DriverInfo, GroupSession, PilotStatus, RadarEntry, TrackInfo, UserInfo
+Cohesion: 0.25
+Nodes (6): Coordinates, DriverInfo, GroupSession, PilotStatus, RadarEntry, UserInfo
 
 ### Community 7 - "Community 7"
-Cohesion: 0.5
-Nodes (3): updateLandingState(), landingEvent, TestUpdateLandingState()
+Cohesion: 0.4
+Nodes (3): stdlogClassifier, main(), openLogSink()
 
 ### Community 8 - "Community 8"
 Cohesion: 1.0
@@ -180,10 +180,10 @@ Nodes (1): Re-create APRS client after Disconnect (killed flag)
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Tracker` connect `Community 1` to `Community 0`, `Community 2`, `Community 3`, `Community 4`, `Community 5`?**
-  _High betweenness centrality (0.484) - this node is a cross-community bridge._
-- **Why does `GroupSession` connect `Community 6` to `Community 2`?**
-  _High betweenness centrality (0.044) - this node is a cross-community bridge._
+- **Why does `Tracker` connect `Community 2` to `Community 0`, `Community 1`, `Community 3`, `Community 4`, `Community 5`, `Community 7`?**
+  _High betweenness centrality (0.486) - this node is a cross-community bridge._
+- **Why does `TrackInfo` connect `Community 1` to `Community 3`, `Community 6`?**
+  _High betweenness centrality (0.070) - this node is a cross-community bridge._
 - **Are the 8 inferred relationships involving `commandArgs()` (e.g. with `.cmdStartPrivate()` and `.cmdMyID()`) actually correct?**
   _`commandArgs()` has 8 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 7 inferred relationships involving `shortID()` (e.g. with `.cmdMyID()` and `.runClient()`) actually correct?**
