@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -435,6 +436,130 @@ func TestIsMessageNotModified(t *testing.T) {
 			t.Error("unrelated error should not match")
 		}
 	})
+}
+
+func TestIsMessageGone(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"can't be edited", errors.New("bad request, Bad Request: message can't be edited"), true},
+		{"to edit not found", errors.New("Bad Request: message to edit not found"), true},
+		{"MESSAGE_ID_INVALID", errors.New("MESSAGE_ID_INVALID"), true},
+		{"not modified is not gone", errors.New("Bad Request: message is not modified"), false},
+		{"unrelated", errors.New("network is unreachable"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isMessageGone(c.err); got != c.want {
+				t.Errorf("isMessageGone(%v) = %v, want %v", c.err, got, c.want)
+			}
+		})
+	}
+}
+
+func TestMarkLiveLocationDead(t *testing.T) {
+	tr := &Tracker{
+		users: make(map[int64]*UserInfo),
+		session: &GroupSession{
+			ChatID: -100,
+			Tracking: map[string]*TrackInfo{
+				"AABBCC": {MessageID: 42},
+			},
+		},
+	}
+	tr.markLiveLocationDead("AABBCC", errors.New("message can't be edited"))
+	if !tr.session.Tracking["AABBCC"].LiveLocationDead {
+		t.Fatal("expected LiveLocationDead=true after markLiveLocationDead")
+	}
+	// Calling a second time is a no-op (idempotent) and doesn't panic for an
+	// already-dead message.
+	tr.markLiveLocationDead("AABBCC", errors.New("message can't be edited"))
+	if !tr.session.Tracking["AABBCC"].LiveLocationDead {
+		t.Fatal("expected idempotent behaviour")
+	}
+	// Unknown ID is a safe no-op.
+	tr.markLiveLocationDead("DEADBE", errors.New("message can't be edited"))
+}
+
+func TestMarkLabelDead(t *testing.T) {
+	tr := &Tracker{
+		users: make(map[int64]*UserInfo),
+		session: &GroupSession{
+			ChatID: -100,
+			Tracking: map[string]*TrackInfo{
+				"AABBCC": {LabelMsgID: 7},
+			},
+		},
+	}
+	tr.markLabelDead("AABBCC", errors.New("message can't be edited"))
+	if !tr.session.Tracking["AABBCC"].LabelDead {
+		t.Fatal("expected LabelDead=true after markLabelDead")
+	}
+}
+
+func TestDeadFlagsPersistRoundtrip(t *testing.T) {
+	// Persisting the dead flags survives a save/load cycle so a restart does
+	// not waste API round-trips rediscovering a dead message.
+	dir := t.TempDir()
+	old := chdir(t, dir)
+	defer old()
+
+	tr := &Tracker{
+		users:    make(map[int64]*UserInfo),
+		saveCh:   make(chan []byte, 1),
+		saveDone: make(chan struct{}),
+		session: &GroupSession{
+			ChatID:     -100,
+			TrackingOn: true,
+			Tracking: map[string]*TrackInfo{
+				"AABBCC": {
+					MessageID:           42,
+					LabelMsgID:          7,
+					LiveLocationDead:    true,
+					LabelDead:           true,
+					LandedFinalEditDone: true,
+					Status:              StatusLanded,
+				},
+			},
+		},
+	}
+	go tr.saveWorker()
+	tr.mu.Lock()
+	tr.saveState()
+	tr.mu.Unlock()
+	// Drain and flush the worker before reading.
+	close(tr.saveCh)
+	<-tr.saveDone
+
+	tr2 := &Tracker{users: make(map[int64]*UserInfo)}
+	tr2.mu.Lock()
+	tr2.loadState()
+	tr2.mu.Unlock()
+	got := tr2.session.Tracking["AABBCC"]
+	if got == nil {
+		t.Fatal("pilot missing after reload")
+	}
+	if !got.LiveLocationDead || !got.LabelDead || !got.LandedFinalEditDone {
+		t.Errorf("flags not preserved: live=%v label=%v final=%v",
+			got.LiveLocationDead, got.LabelDead, got.LandedFinalEditDone)
+	}
+}
+
+// chdir changes the working directory for the duration of a test. Returned
+// closure restores the previous directory.
+func chdir(t *testing.T, dir string) func() {
+	t.Helper()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	return func() { _ = os.Chdir(old) }
 }
 
 func TestPendingCleanupQueue(t *testing.T) {

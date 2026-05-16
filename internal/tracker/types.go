@@ -42,6 +42,18 @@ type TrackInfo struct {
 	// LabelStatus is the PilotStatus reflected by the label's emoji on the
 	// last edit. Used to skip Telegram round-trips when nothing has changed.
 	LabelStatus PilotStatus
+	// LiveLocationDead is set after Telegram permanently refuses to edit the
+	// live-location pin (see isMessageGone). Once true, the ticker stops
+	// editing this pin to avoid log spam — and does not re-send a new pin,
+	// since the pilot already has earlier history in the chat.
+	LiveLocationDead bool
+	// LabelDead — same for the per-pilot text label (info.LabelMsgID).
+	LabelDead bool
+	// LandedFinalEditDone marks that we performed exactly one edit cycle after
+	// landing was detected (to move the pin to the final landing coordinates).
+	// Subsequent cycles skip the pin so the chat doesn't keep getting silent
+	// edits on a stationary message.
+	LandedFinalEditDone bool
 }
 
 // StatusEmoji returns an emoji reflecting the pilot's current state.
@@ -121,6 +133,11 @@ type GroupSession struct {
 	// /track_off confirm, /session_reset confirm, /landing). Runtime-only,
 	// not persisted — bot restart drops pending batches.
 	PendingCleanup map[int64][]int
+	// InactivityWarnedAt is the time the chat-side warning about a long beacon
+	// silence was posted on this session. Used to make sure the warning fires
+	// exactly once before auto-stop. Runtime only — a restart resets it, which
+	// is fine: if silence persists past the threshold, the warning re-fires.
+	InactivityWarnedAt time.Time
 	// Radar mode (runtime only):
 	RadarOn            bool
 	RadarRadius        int // radar-specific radius (may differ from TrackAreaRadius)
